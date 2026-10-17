@@ -9,49 +9,11 @@ concurrency:
   group: check-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Windows only, deliberately. This is a local music player and the packages that
+# matter are the ones a Windows listener installs; the Linux and macOS jobs were
+# removed rather than allowed to rot, and their packaging in
+# desktopApp/build.gradle.kts is still there for whenever they are wanted back.
 jobs:
-  desktop-linux:
-    name: Desktop · Linux
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - uses: gradle/actions/setup-gradle@v4
-
-      - name: Write local.properties
-        run: |
-          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
-          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
-
-      - run: chmod +x gradlew
-
-      - name: Tests
-        run: ./gradlew :shared:jvmTest :desktopUi:jvmTest :desktopApp:test
-
-      - name: Build the distributable
-        run: ./gradlew :desktopApp:createDistributable
-
-      - name: The analyser is in the jar
-        run: |
-          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord/lib/app/desktopApp*.jar)
-          jar tf "$jar" | grep -q 'native/libbitchord_analysis.so'
-          jar tf "$jar" | grep -q 'models/.*\.onnx'
-
-      - name: Upload test reports
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-linux-test-reports
-          path: |
-            desktopApp/build/reports/tests/
-            shared/build/reports/tests/
-
   desktop-windows:
     name: Desktop · Windows
     runs-on: windows-latest
@@ -72,6 +34,17 @@ jobs:
           echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
           echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
 
+      # jpackage drives candle and light to build the .exe and the .msi, and
+      # neither ships with a GitHub runner. The binaries are dropped rather than
+      # installed, and put on PATH for the steps that follow.
+      - name: WiX Toolset 3
+        shell: pwsh
+        run: |
+          $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          Invoke-WebRequest -Uri $url -OutFile wix.zip
+          Expand-Archive wix.zip -DestinationPath "$env:RUNNER_TEMP\wix"
+          "$env:RUNNER_TEMP\wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: CMake version
         run: cmake --version
 
@@ -80,6 +53,12 @@ jobs:
 
       - name: Build the distributable
         run: .\gradlew.bat :desktopApp:createDistributable
+
+      # The installer, not just the runnable folder: a listener should be able to
+      # take the artefact from this run and install it without a JDK, a toolchain
+      # or a command line.
+      - name: Build the installer
+        run: .\gradlew.bat :desktopApp:packageExe
 
       - name: The analyser is in the jar
         shell: bash
@@ -90,6 +69,15 @@ jobs:
           # WinRT, so only MSVC can build it and only this job ever does.
           jar tf "$jar" | grep -q 'native/bitchord_smtc.dll'
 
+      - name: The installer was produced
+        shell: bash
+        run: ls -lh desktopApp/build/compose/binaries/main/exe/*.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-Windows-Setup
+          path: desktopApp/build/compose/binaries/main/exe/*.exe
+
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4
@@ -99,47 +87,9 @@ jobs:
             desktopApp/build/reports/tests/
             shared/build/reports/tests/
 
-  desktop-macos:
-    name: Desktop · macOS
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - uses: gradle/actions/setup-gradle@v4
-
-      - name: Write local.properties
-        run: |
-          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
-          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
-
-      - run: chmod +x gradlew
-
-      - name: Tests
-        run: ./gradlew :shared:jvmTest :desktopUi:jvmTest :desktopApp:test
-
-      - name: Build the distributable
-        run: ./gradlew :desktopApp:createDistributable
-
-      - name: The analyser and models are in the jar
-        run: |
-          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord.app/Contents/app/desktopApp*.jar)
-          jar tf "$jar" | grep -q 'models/.*\.onnx'
-
-      - name: Upload test reports
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-macos-test-reports
-          path: |
-            desktopApp/build/reports/tests/
-            shared/build/reports/tests/
-
+  # Untouched for now: it is not this player's target, and fixing it is its own
+  # piece of work. Left in place rather than deleted so that work has somewhere
+  # to start.
   android:
     name: Android
     runs-on: ubuntu-latest
@@ -179,21 +129,3 @@ jobs:
         with:
           name: android-test-reports
           path: app/build/reports/tests/
-
-  backend:
-    name: Backend · Go
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: backend/go.mod
-          cache-dependency-path: backend/go.sum
-
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...
