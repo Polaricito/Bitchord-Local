@@ -112,6 +112,13 @@ object DesktopLocalMusic {
         val modified = attributes?.lastModifiedTime()?.toInstant()
         val added = attributes?.creationTime()?.toInstant() ?: modified ?: Instant.now()
         val identity = absolutePath.toString()
+        // The file's own tags first and its name second. This is what a
+        // filesystem does not hand over — title, artist, album, track number and
+        // the cover picture all live in the file — and it is why the phone's
+        // local rows read correctly while a desktop's could only ever guess from
+        // the name, putting every track without " - " in its name under an artist
+        // of "On This Computer" and every one of them in one album.
+        val tags = DesktopAudioTags.read(absolutePath)
         val parsed = parseFileName(nameWithoutExtension)
         val codec = extension.lowercase(Locale.ROOT).let { value ->
             when (value) {
@@ -125,9 +132,11 @@ object DesktopLocalMusic {
         }
         return Song(
             videoId = "local:$identity",
-            title = parsed.title,
-            artist = parsed.artist,
-            thumbnailUrl = null,
+            title = tags.title ?: parsed.title,
+            artist = tags.artist ?: parsed.artist,
+            thumbnailUrl = tags.artworkUri,
+            albumName = tags.album,
+            trackNumber = tags.trackNumber,
             localUri = absolutePath.toUri().toString(),
             localPath = absolutePath.toString(),
             localDateAddedSeconds = added.epochSecond,

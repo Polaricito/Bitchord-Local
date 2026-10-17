@@ -85,7 +85,13 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.0.4")
 
     // Automix runs the same two models the Android build does.
-    implementation("com.microsoft.onnxruntime:onnxruntime:1.29.0")
+    // Neither end of the version range can run these models on an older CPU, so the
+// newest release is kept rather than a version that merely appears to work.
+// ONNX Runtime 1.21 and up fail to initialise their native library at all
+// without AVX512; 1.20.0 initialises but has no kernel for the ConvInteger op
+// the int8 models are built around. Downgrading is worse than useless: the
+// analyser would report itself available and then fail on every track.
+implementation("com.microsoft.onnxruntime:onnxruntime:1.29.0")
 
     // Decoding, resampling and demuxing for the audio engine.
     implementation("org.bytedeco:javacpp:$javacppVersion")
@@ -137,6 +143,11 @@ dependencies {
 
     // Same URL deobfuscation helper used by Android's StreamResolver.
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.3")
+
+    // Reads the tags and the picture embedded in a local audio file, the way the
+    // phone reads them out of MediaStore — see DesktopAudioTags. No runtime
+    // dependencies of its own, and it never decodes audio, only its metadata.
+    implementation("net.jthink:jaudiotagger:3.0.1")
 
     // JVM equivalent of Android's QuickJS module host.
     implementation("org.graalvm.polyglot:polyglot:24.1.2")

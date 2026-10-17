@@ -25,13 +25,8 @@ import com.music.bitchord.data.YtMusicRepository
 import com.music.bitchord.data.model.EntityType
 import com.music.bitchord.data.model.SearchHistoryEntity
 import com.music.bitchord.ui.LocalPullToRefreshEnabled
-import com.music.bitchord.ui.screens.ExploreScreen
-import com.music.bitchord.ui.screens.HomeScreen
 import com.music.bitchord.ui.screens.CompactTrackRow
-import com.music.bitchord.ui.screens.LibraryGridPage
 import com.music.bitchord.ui.screens.LibraryLink
-import com.music.bitchord.ui.screens.LibraryScreen
-import com.music.bitchord.ui.screens.MoodGenrePlaylistsScreen
 import com.music.bitchord.ui.screens.SearchScreen
 import com.music.bitchord.data.NerdStats
 import com.music.bitchord.playback.PlaybackPosition
@@ -478,14 +473,21 @@ internal fun desktopTypography(): Typography {
     )
 }
 
+/**
+ * The pages the sidebar and the compact window's own navigation offer.
+ *
+ * Home is this computer's own music now — every local file, grouped into songs,
+ * artists and albums — so it carries what Local Music used to and that tab is
+ * gone. Explore is gone with it: both were the streaming service's own feed, and
+ * nothing here should be answering with recommendations. What remains is what
+ * does not invent anything: a search you type, a history of what you played,
+ * and what you have downloaded.
+ */
 private enum class DesktopDestination(val id: String, val label: String) {
     LISTEN_NOW("listen-now", "Home"),
-    EXPLORE("explore", "Explore"),
-    LIBRARY("library", "Library"),
     SEARCH("search", "Search"),
     HISTORY("history", "History"),
     DOWNLOADS("downloads", "Downloads"),
-    LOCAL_MUSIC("local-music", "Local Music"),
     SETTINGS("settings", "Settings"),
 }
 
@@ -519,31 +521,9 @@ fun BitChordDesktopApp() {
     var personalPositionStash by remember { mutableStateOf(0L) }
     var personalPlayingStash by remember { mutableStateOf(false) }
     val persistence = remember { DesktopPersistence() }
-    var availableUpdate by remember { mutableStateOf<DesktopUpdateChecker.UpdateInfo?>(null) }
-    LaunchedEffect(Unit) { availableUpdate = DesktopUpdateChecker.check() }
-    availableUpdate?.let { update ->
-        AlertDialog(
-            onDismissRequest = { availableUpdate = null },
-            title = { Text(DesktopStrings["d_update_available", "Update available"]) },
-            text = {
-                Text(
-                    "BitChord ${update.version} is out — you have ${DesktopUpdateChecker.currentVersion}." +
-                        (update.notes?.takeIf { it.isNotBlank() }?.let { "\n\n${it.take(600)}" } ?: ""),
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    DesktopExternalLinks.open(update.downloadUrl ?: update.releaseUrl)
-                    availableUpdate = null
-                }) { Text(DesktopStrings["d_download", "Download"]) }
-            },
-            dismissButton = {
-                TextButton(onClick = { availableUpdate = null }) {
-                    Text(DesktopStrings["d_later", "Later"])
-                }
-            },
-        )
-    }
+    // No update check. This is a build of your own: it is newer than anything
+    // the upstream publishes, so the one thing the dialog could honestly have
+    // said was that a release exists — which is noise, not news.
     var destination by remember { mutableStateOf(DesktopDestination.LISTEN_NOW) }
     var query by remember { mutableStateOf("") }
     var searchFilter by remember { mutableStateOf(SearchFilter.ALL) }
@@ -2312,10 +2292,6 @@ fun BitChordDesktopApp() {
     }
 
     fun selectDestination(next: DesktopDestination) {
-        if (next == DesktopDestination.LIBRARY && libraryStale) {
-            libraryStale = false
-            reloadLibrary()
-        }
         openedArtist = null
         openedCollection = null
         overlays.replay = false
@@ -2410,31 +2386,6 @@ fun BitChordDesktopApp() {
                 videoId = null,
                 browseId = LOCAL_PLAYLIST_PREFIX + playlist.id,
             )
-        }
-    }
-
-    /** A Library card: a folder is a page of this app's, a local playlist is opened from here. */
-    fun openLibraryItem(item: ShelfItem) {
-        val browseId = item.browseId.orEmpty()
-        when {
-            browseId == LOCAL_DOWNLOADS_ID -> selectDestination(DesktopDestination.DOWNLOADS)
-            browseId == LOCAL_MUSIC_ID -> selectDestination(DesktopDestination.LOCAL_MUSIC)
-            browseId == SPOTIFY_LIBRARY_ID -> openSpotifyLibrary()
-            // Spotify's tracks fill in below, as they are read and matched.
-            browseId.startsWith(SPOTIFY_PAGE_PREFIX) -> showCollection(
-                DesktopCollection(
-                    browseId = browseId,
-                    title = item.title,
-                    subtitle = item.subtitle,
-                    thumbnailUrl = item.thumbnailUrl,
-                    type = BrowseType.PLAYLIST,
-                    songs = emptyList(),
-                    loading = true,
-                ),
-            )
-            browseId.startsWith(LOCAL_PLAYLIST_PREFIX) ->
-                playlists.firstOrNull { it.id == browseId.removePrefix(LOCAL_PLAYLIST_PREFIX) }?.let(::openPlaylist)
-            else -> openShelfItem(item)
         }
     }
 
@@ -2605,11 +2556,15 @@ fun BitChordDesktopApp() {
             downloads = onDisk
             persistence.saveDownloads(onDisk)
         }
-        loadHome()
+        // Home is this computer's music now, so nothing is asked of the streaming service at
+        // launch. The feed loader is still here and still works — see [loadHome] — but a page
+        // nobody is looking at is not worth a request on every start.
     }
 
     // The feed is the account's: signing in, out or across to another channel is a different Home,
-    // and Recently Played only exists with an account behind it.
+    // and Recently Played only exists with an account behind it. Dormant while nothing asks for the
+    // feed — [homeIdentity] is only ever written by [loadHome], so with no launch-time call this
+    // never fires either. It stays because the loader does, and putting a Home back is one call.
     LaunchedEffect(youtubeSignedIn, activeAccountId) {
         val identity = "${DesktopYouTubeAuth.isSignedIn}/${DesktopAccounts.activeAccountId()}"
         if (homeIdentity != null && identity != homeIdentity) loadHome()
@@ -2665,14 +2620,6 @@ fun BitChordDesktopApp() {
             },
             onFailure = { exploreState = UiState.Error(it.message ?: "Could not load Explore") },
         )
-    }
-
-    LaunchedEffect(destination, exploreReloads) {
-        if (destination == DesktopDestination.EXPLORE &&
-            (exploreState is UiState.Loading || exploreReloads > 0)
-        ) {
-            loadExplore()
-        }
     }
 
     // Category buttons carry no artwork of their own, so a few are resolved at a time from the
@@ -4117,48 +4064,18 @@ fun BitChordDesktopApp() {
                             downloadInProgress = downloadInProgress,
                             contentPadding = contentPadding,
                         )
-                        destination == DesktopDestination.LISTEN_NOW -> HomeScreen(
-                            state = homeState,
-                            listState = homeListState,
-                            onItemClick = { item, shelfTitle -> openShelfItem(item, shelfTitle) },
-                            onRetry = ::loadHome,
-                            refreshing = false,
-                            onRefresh = ::loadHome,
-                            pullState = rememberPullToRefreshState(),
+                        // Home is this computer's music, not a service's: every local file it has found,
+                        // laid out as songs, as artists and as albums. The streaming feed
+                        // that used to stand here is gone with the Explore tab, so nothing
+                        // on this page is a recommendation.
+                        destination == DesktopDestination.LISTEN_NOW -> DesktopLocalMusicPage(
+                            songs = localSongs,
+                            onSongClick = {
+                                playSong(it, source = DesktopQueueSource(DesktopStrings["home", "Home"], PlaybackSourceType.BROWSE))
+                            },
                             contentPadding = sharedPagePadding,
-                            title = null,
-                            signedIn = youtubeSignedIn,
-                            onSignIn = { overlays.accounts = true },
-                            onItemLongPress = { item -> if (item.videoId != null) openMenu(item.toSong()) },
-                            onLoadMore = ::loadMoreHome,
-                            loadingMore = homeLoadingMore,
-                            recentlyPlayedLoading = homeRecentsLoading,
-                            leadHero = false,
-                        )
-                        destination == DesktopDestination.EXPLORE && selectedMoodGenre != null -> Column(Modifier.fillMaxSize()) {
-                            MoodGenrePlaylistsScreen(
-                                title = selectedMoodGenre!!.title,
-                                state = moodGenreShelves,
-                                listState = moodGenreListState,
-                                onItemClick = { item -> openShelfItem(item, selectedMoodGenre?.title) },
-                                onRetry = {
-                                    moodGenreShelves = UiState.Loading
-                                    moodGenreReloads++
-                                },
-                                contentPadding = PaddingValues(bottom = sharedPagePadding.calculateBottomPadding()),
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        destination == DesktopDestination.EXPLORE -> ExploreScreen(
-                            state = exploreState,
-                            listState = exploreListState,
-                            onCategoryClick = ::openMoodGenre,
-                            onRetry = { exploreReloads++ },
-                            refreshing = false,
-                            onRefresh = { exploreReloads++ },
-                            pullState = rememberPullToRefreshState(),
-                            contentPadding = sharedPagePadding,
-                            showTitle = false,
+                            menu = { song -> songMenu(song) },
+                            persistenceKey = "home",
                         )
                         destination == DesktopDestination.SEARCH -> SearchScreen(
                             query = query,
@@ -4249,76 +4166,6 @@ fun BitChordDesktopApp() {
                             topPadding = 0.dp,
                             showField = false,
                         )
-                        destination == DesktopDestination.LIBRARY && libraryShowAll != null -> Column(Modifier.fillMaxSize()) {
-                            // The phone keeps the grid's sort beside it, in the bar above; here it sits
-                            // at the end of the row the way back is on.
-                            Row(
-                                Modifier.fillMaxWidth().padding(top = 8.dp, end = 12.dp),
-                                horizontalArrangement = Arrangement.End,
-                            ) { DesktopLibrarySortMenu() }
-                            spotifyLibraryStatus?.takeIf { libraryShowAll?.title == SPOTIFY_SHELF }?.let { status ->
-                                Text(
-                                    status,
-                                    color = DesktopSecondary,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.padding(horizontal = PAGE_GUTTER, vertical = 12.dp),
-                                )
-                            }
-                            LibraryGridPage(
-                                shelf = libraryShowAll!!,
-                                gridState = libraryGridState,
-                                onItemClick = ::openLibraryItem,
-                                onItemLongPress = { item -> if (item.videoId != null) openMenu(item.toSong()) },
-                                contentPadding = PaddingValues(bottom = sharedPagePadding.calculateBottomPadding()),
-                                modifier = Modifier.weight(1f),
-                                onNewPlaylist = { overlays.playlistDialog = true }
-                                    .takeIf { libraryShowAll?.title == PLAYLISTS_SHELF },
-                            )
-                        }
-                        destination == DesktopDestination.LIBRARY -> LibraryScreen(
-                            signedIn = youtubeSignedIn,
-                            state = libraryState,
-                            listState = libraryListState,
-                            onShelfItemClick = ::openLibraryItem,
-                            onShelfItemLongPress = { item -> if (item.videoId != null) openMenu(item.toSong()) },
-                            onNewPlaylist = { overlays.playlistDialog = true },
-                            onImportSpotifyPlaylist = { spotifyImportOpen = true },
-                            onShowAll = { shelf -> libraryShowAll = shelf },
-                            replay = {
-                                // The phone's wallet of Replay cards, or nothing until there is
-                                // listening to deal them from.
-                                val cards = remember(replaySummary) { replaySummary.heroCards() }
-                                if (!replaySummary.isEmpty && cards.isNotEmpty()) {
-                                    ShelfRow(
-                                        modifier = Modifier.padding(vertical = 6.dp),
-                                        contentPadding = PaddingValues(horizontal = PAGE_GUTTER),
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    ) {
-                                        items(cards, key = { it.label }) { card ->
-                                            ReplayCreditCard(
-                                                label = card.label,
-                                                value = card.value,
-                                                detail = card.detail,
-                                                artworkUrl = card.artworkUrl,
-                                                holder = replayHolder,
-                                                memberSince = replaySummary.memberSince(),
-                                                onClick = { overlays.replay = true },
-                                                modifier = Modifier.width(300.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                            },
-                            onSignIn = { overlays.accounts = true },
-                            onRetry = ::reloadLibrary,
-                            refreshing = false,
-                            onRefresh = ::reloadLibrary,
-                            pullState = rememberPullToRefreshState(),
-                            contentPadding = sharedPagePadding,
-                            links = libraryLinks,
-                            deviceItems = libraryDeviceItems,
-                            showTitle = false,
-                        )
                         destination == DesktopDestination.HISTORY -> DesktopHistoryPage(
                             // The account's history when there is one, and what
                             // this computer played when there is not.
@@ -4350,12 +4197,6 @@ fun BitChordDesktopApp() {
                                 )
                             }
                         }
-                        destination == DesktopDestination.LOCAL_MUSIC -> DesktopLocalMusicPage(
-                            songs = localSongs,
-                            onSongClick = { playSong(it, source = DesktopQueueSource(DesktopStrings["local_music", "Local Music"], PlaybackSourceType.BROWSE)) },
-                            contentPadding = contentPadding,
-                            menu = { song -> songMenu(song) },
-                        )
                     }
                 }
                 }
@@ -4755,12 +4596,6 @@ private fun DesktopSidebar(
             DesktopSidebarItem(BitChordIcons.Home, DesktopStrings["home", "Home"], destination == DesktopDestination.LISTEN_NOW) {
                 onDestinationSelected(DesktopDestination.LISTEN_NOW)
             }
-            DesktopSidebarItem(BitChordIcons.Explore, "Explore", destination == DesktopDestination.EXPLORE) {
-                onDestinationSelected(DesktopDestination.EXPLORE)
-            }
-            DesktopSidebarItem(BitChordIcons.Library, "Library", destination == DesktopDestination.LIBRARY) {
-                onDestinationSelected(DesktopDestination.LIBRARY)
-            }
             DesktopSidebarItem(BitChordIcons.Search, "Search", destination == DesktopDestination.SEARCH) {
                 onDestinationSelected(DesktopDestination.SEARCH)
             }
@@ -4784,15 +4619,6 @@ private fun DesktopSidebar(
                     destination == DesktopDestination.DOWNLOADS,
                     onClick = { onDestinationSelected(DesktopDestination.DOWNLOADS) },
                     onHide = { DesktopSidebarVisibility.hide(DOWNLOADS_KEY, "Downloads") },
-                )
-            }
-            if (LOCAL_MUSIC_KEY !in hiddenSidebar) {
-                DesktopSidebarItem(
-                    BitChordIcons.Library,
-                    "Local Music",
-                    destination == DesktopDestination.LOCAL_MUSIC,
-                    onClick = { onDestinationSelected(DesktopDestination.LOCAL_MUSIC) },
-                    onHide = { DesktopSidebarVisibility.hide(LOCAL_MUSIC_KEY, "Local Music") },
                 )
             }
             Spacer(Modifier.height(6.dp))
@@ -4917,7 +4743,6 @@ private fun DesktopSidebarItem(
 /** The secondary destinations that can be tucked away, by the key they hide under. */
 private const val HISTORY_KEY = "dest:HISTORY"
 private const val DOWNLOADS_KEY = "dest:DOWNLOADS"
-private const val LOCAL_MUSIC_KEY = "dest:LOCAL_MUSIC"
 
 /**
  * The "N hidden" row that brings tucked-away rows back: a menu of everything
@@ -5011,13 +4836,14 @@ private fun DesktopFloatingNavigation(
     destination: DesktopDestination,
     onDestinationSelected: (DesktopDestination) -> Unit,
 ) {
+    // The compact window's own navigation, and the pages the sidebar's head offers.
+    // A window too narrow for the sidebar gets these instead — as it always did,
+    // the two that were not reachable from here were History and Downloads.
     val tabs = listOf(
-        DesktopDestination.LISTEN_NOW to (BitChordIcons.Play to "Play"),
-        DesktopDestination.EXPLORE to (BitChordIcons.Explore to "Explore"),
-        DesktopDestination.LIBRARY to (BitChordIcons.Library to "Library"),
+        DesktopDestination.LISTEN_NOW to (BitChordIcons.Home to "Home"),
         DesktopDestination.SEARCH to (BitChordIcons.Search to "Search"),
     )
-    val selected = tabs.firstOrNull { it.first == destination }?.first ?: DesktopDestination.LIBRARY
+    val selected = tabs.firstOrNull { it.first == destination }?.first ?: DesktopDestination.LISTEN_NOW
     val shape = RoundedCornerShape(percent = 50)
     Surface(
         modifier = Modifier
@@ -5618,8 +5444,6 @@ private fun DesktopDownloadsPage(
         onSongClick = onSongClick,
         contentPadding = contentPadding,
         menu = menu,
-        title = DesktopStrings["downloads", "Downloads"],
-        subtitle = DesktopStrings["d_available_offline", "Available offline"],
         emptyIcon = BitChordIcons.Download,
         emptyTitle = DesktopStrings["d_no_downloads", "No downloads"],
         emptyDescription = DesktopStrings["d_downloaded_songs_will_appear_here", "Downloaded songs will appear here."],
@@ -5627,17 +5451,24 @@ private fun DesktopDownloadsPage(
     )
 }
 
+/**
+ * The page behind Home and Downloads: a library of files, laid out as songs, as
+ * artists and as albums.
+ *
+ * Both are the same shape — a search over what is on disk, a sort and a
+ * list-or-grid toggle across the top, and three groupings underneath — and both
+ * keep their sort, their view and their tab in [persistenceKey]'s own slot, so
+ * one does not inherit the other's.
+ */
 @Composable
 private fun DesktopLocalMusicPage(
     songs: List<Song>,
     onSongClick: (Song) -> Unit,
     contentPadding: PaddingValues,
-    title: String = "Local Music",
-    subtitle: String = "Audio files found in Music and Downloads",
     emptyIcon: androidx.compose.ui.graphics.vector.ImageVector = BitChordIcons.MusicNote,
-    emptyTitle: String = "No local music",
-    emptyDescription: String = "Put audio files in your Music folder and reopen this page.",
-    persistenceKey: String = "local",
+    emptyTitle: String = DesktopStrings["d_no_music_on_this_computer", "No music on this computer"],
+    emptyDescription: String = DesktopStrings["d_put_audio_in_your_music_folder", "Put audio files in your Music folder and this page will fill up."],
+    persistenceKey: String,
     menu: (@Composable (Song) -> Unit)? = null,
 ) {
     val persistence = remember { DesktopPersistence() }
@@ -5659,7 +5490,7 @@ private fun DesktopLocalMusicPage(
             }.getOrDefault(DesktopLibrarySort.TITLE_ASC),
         )
     }
-    var drillDown by remember(persistenceKey) { mutableStateOf<Pair<String, List<Song>>?>(null) }
+    var drillDown by remember(persistenceKey) { mutableStateOf<DesktopMusicGroup?>(null) }
     val filteredSongs = remember(songs, sort, searchQuery) {
         songs.sortedForDesktopLibrary(sort).filter { song ->
             searchQuery.isBlank() || song.title.contains(searchQuery, true) || song.artist.contains(searchQuery, true) ||
@@ -5668,11 +5499,17 @@ private fun DesktopLocalMusicPage(
     }
     val artists = remember(filteredSongs) {
         filteredSongs.groupBy { it.artist.ifBlank { "On This Computer" } }
-            .entries.sortedBy { it.key.lowercase() }
+            .map { (name, songs) -> name to songs }
+            .sortedBy { it.first.lowercase() }
     }
     val albums = remember(filteredSongs) {
-        filteredSongs.groupBy { it.albumName?.takeIf(String::isNotBlank) ?: "Unknown Album" }
-            .entries.sortedBy { it.key.lowercase() }
+        // Grouped by the album the file's own tags name — which is what the
+        // phone groups its device library by, and what a release is called — so
+        // the tab is only as good as the tag reading behind it.
+        val unknown = DesktopStrings["d_unknown_album", "Unknown Album"]
+        filteredSongs.groupBy { it.albumName?.takeIf(String::isNotBlank) ?: unknown }
+            .map { (name, songs) -> name to songs.inReleaseOrder() }
+            .sortedBy { it.first.lowercase() }
     }
     DesktopPageScaffold(contentPadding) {
         Column(
@@ -5737,6 +5574,25 @@ private fun DesktopLibrarySort.label(): String = when (this) {
     DesktopLibrarySort.DATE_MODIFIED -> "Modified"
 }
 
+/**
+ * An album's tracks in the order the release puts them in, rather than in the
+ * order the library's own sort happened to leave them.
+ *
+ * Only when the tags can say: the track numbers come out of the files
+ * themselves (see [DesktopAudioTags]), and an album whose files state none — or
+ * state only some of them — is left exactly as it was sorted, because half an
+ * ordering is worse than none. Applied to the Albums tab alone, so a listener
+ * who chose Z–A for Songs still gets it there.
+ */
+private fun List<Song>.inReleaseOrder(): List<Song> {
+    val numbers = map { it.trackNumber }
+    if (numbers.any { it == null }) return this
+    return sortedWith(
+        compareBy<Song> { it.trackNumber ?: Int.MAX_VALUE }
+            .thenBy(String.CASE_INSENSITIVE_ORDER, Song::title),
+    )
+}
+
 @Composable
 private fun DesktopLibrarySongContent(
     songs: List<Song>,
@@ -5785,11 +5641,20 @@ private fun DesktopLibrarySongContent(
     }
 }
 
+/**
+ * One grouping of the library: a name, and the tracks under it.
+ *
+ * A pair rather than a `Map.Entry` because the Albums tab has to hand over the
+ * tracks in the release's own order rather than the order `groupBy` left them
+ * in, and an entry's value cannot be replaced without rebuilding the map.
+ */
+private typealias DesktopMusicGroup = Pair<String, List<Song>>
+
 @Composable
 private fun DesktopLibraryGroupingContent(
-    groups: List<Map.Entry<String, List<Song>>>,
+    groups: List<DesktopMusicGroup>,
     view: DesktopLibraryView,
-    onGroupClick: (Pair<String, List<Song>>) -> Unit,
+    onGroupClick: (DesktopMusicGroup) -> Unit,
 ) {
     if (groups.isEmpty()) {
         DesktopEmptyPage(BitChordIcons.Search, "Nothing here yet", "Music will be grouped as it is added.")
@@ -5801,12 +5666,12 @@ private fun DesktopLibraryGroupingContent(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            gridItems(groups, key = { it.key }) { group ->
-                Column(Modifier.fillMaxWidth().clickable { onGroupClick(group.key to group.value) }) {
-                    DesktopArtwork(group.value.firstOrNull()?.thumbnailUrl, Modifier.fillMaxWidth().height(150.dp).clip(CircleShape))
+            gridItems(groups, key = { it.first }) { (name, songs) ->
+                Column(Modifier.fillMaxWidth().clickable { onGroupClick(name to songs) }) {
+                    DesktopArtwork(songs.firstOrNull()?.thumbnailUrl, Modifier.fillMaxWidth().height(150.dp).clip(CircleShape))
                     Spacer(Modifier.height(7.dp))
-                    Text(group.key, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                    Text("${group.value.size} songs", color = DesktopSecondary, style = MaterialTheme.typography.bodySmall)
+                    Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                    Text("${songs.size} songs", color = DesktopSecondary, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -5816,16 +5681,16 @@ private fun DesktopLibraryGroupingContent(
             contentPadding = pagePadding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            items(groups, key = { it.key }) { group ->
+            items(groups, key = { it.first }) { (name, songs) ->
                 Row(
-                    Modifier.fillMaxWidth().clickable { onGroupClick(group.key to group.value) }.padding(vertical = 8.dp),
+                    Modifier.fillMaxWidth().clickable { onGroupClick(name to songs) }.padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    DesktopArtwork(group.value.firstOrNull()?.thumbnailUrl, Modifier.size(54.dp).clip(CircleShape))
+                    DesktopArtwork(songs.firstOrNull()?.thumbnailUrl, Modifier.size(54.dp).clip(CircleShape))
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(group.key, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                        Text("${group.value.size} songs", color = DesktopSecondary, style = MaterialTheme.typography.bodySmall)
+                        Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+                        Text("${songs.size} songs", color = DesktopSecondary, style = MaterialTheme.typography.bodySmall)
                     }
                     Icon(BitChordIcons.Play, DesktopStrings["open", "Open"], tint = DesktopSecondary)
                 }
@@ -6262,6 +6127,10 @@ private fun DesktopSettingsScreen(
                         if (imagesCleared) "Image cache cleared" else "Frees space used by album artwork",
                     ) {
                         DesktopArtworkCache.clear()
+                        // The covers taken out of local files are image cache too, and the only
+                        // ones that take up room on the disk rather than in the heap. They are
+                        // written again the next time the library is scanned.
+                        DesktopLocalCoverCache.default.clear()
                         imagesCleared = true
                     }
                 }
