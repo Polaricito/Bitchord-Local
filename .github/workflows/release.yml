@@ -17,10 +17,21 @@ concurrency:
 
 # Windows only, as in check.yml. The Linux and macOS jobs were removed; their
 # packaging still exists in desktopApp/build.gradle.kts.
+#
+# One job per variant rather than two builds in one job. The variant reaches the
+# package through a Gradle property that is not a declared input of Compose's
+# packaging tasks, so a second build in the same workspace would be reported
+# UP-TO-DATE and hand back the first variant's installer under the second's
+# name. A matrix gives each variant a workspace of its own, which removes the
+# question.
 jobs:
   windows:
-    name: Windows · installer, msi, portable
+    name: Windows · ${{ matrix.variant }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [full, local]
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +61,7 @@ jobs:
           version="${{ inputs.version }}"
           [ -n "$version" ] || version="${GITHUB_REF_NAME#v}"
           echo "value=$version" >> "$GITHUB_OUTPUT"
-          echo "Building $version"
+          echo "Building $version (${{ matrix.variant }})"
 
       - name: Write local.properties
         shell: bash
@@ -58,17 +69,22 @@ jobs:
           echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" > local.properties
           echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> local.properties
 
+      # Only the full variant needs the tests: the local one is the same source
+      # with a flag over it, and running them twice would just double the wait.
       - name: Tests
+        if: matrix.variant == 'full'
         run: .\gradlew.bat :shared:jvmTest :desktopUi:jvmTest :desktopApp:test "-Pbitchord.version=${{ steps.version.outputs.value }}"
 
       - name: Build msi, exe and the app image
         run: |
-          .\gradlew.bat :desktopApp:packageMsi :desktopApp:packageExe :desktopApp:createDistributable "-Pbitchord.version=${{ steps.version.outputs.value }}"
+          .\gradlew.bat :desktopApp:packageMsi :desktopApp:packageExe :desktopApp:createDistributable `
+            "-Pbitchord.version=${{ steps.version.outputs.value }}" `
+            "-Pbitchord.variant=${{ matrix.variant }}"
 
       - name: The analyser and models are in the jar
         shell: bash
         run: |
-          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord/app/desktopApp*.jar)
+          jar=$(ls desktopApp/build/compose/binaries/main/app/*/app/desktopApp*.jar)
           jar tf "$jar" | grep -q 'native/bitchord_analysis.dll'
           jar tf "$jar" | grep -q 'models/.*\.onnx'
           # WinRT, so only MSVC can build it and only this job ever does.
@@ -78,16 +94,19 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ steps.version.outputs.value }}"
+          $t = "${{ matrix.variant }}"
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item desktopApp/build/compose/binaries/main/msi/*.msi "dist/BitChord-$v-windows-x64.msi"
-          Copy-Item desktopApp/build/compose/binaries/main/exe/*.exe "dist/BitChord-$v-windows-x64-setup.exe"
-          7z a -tzip -mx=5 "dist/BitChord-$v-windows-x64-portable.zip" `
-            "desktopApp/build/compose/binaries/main/app/BitChord/*" | Out-Null
+          Copy-Item desktopApp/build/compose/binaries/main/msi/*.msi "dist/BitChord-$t-$v-windows-x64.msi"
+          Copy-Item desktopApp/build/compose/binaries/main/exe/*.exe "dist/BitChord-$t-$v-windows-x64-setup.exe"
+          # The app image is named after the package, which is what tells the two
+          # apart in a build directory; globbing it avoids hard-coding either.
+          7z a -tzip -mx=5 "dist/BitChord-$t-$v-windows-x64-portable.zip" `
+            "desktopApp/build/compose/binaries/main/app/*/*" | Out-Null
           Get-ChildItem dist | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-artifacts
+          name: windows-${{ matrix.variant }}-artifacts
           path: dist/*
 
   release:

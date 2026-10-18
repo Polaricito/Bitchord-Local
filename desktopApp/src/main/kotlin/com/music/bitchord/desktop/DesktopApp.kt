@@ -4077,6 +4077,25 @@ fun BitChordDesktopApp() {
                             menu = { song -> songMenu(song) },
                             persistenceKey = "home",
                         )
+                        // In a local build there is no service to ask, so Search answers
+                        // from the music on this computer. It is the same page Home
+                        // uses, opened on the flat list of tracks rather than grouped,
+                        // because "find one song I own" and "browse what I own" are
+                        // different questions and this is the one this tab is for.
+                        destination == DesktopDestination.SEARCH &&
+                            DesktopVariant.isLocal -> DesktopLocalMusicPage(
+                            songs = localSongs,
+                            onSongClick = { list, index ->
+                                playSongs(list, index, DesktopQueueSource(DesktopStrings["search", "Search"], PlaybackSourceType.SEARCH))
+                            },
+                            contentPadding = sharedPagePadding,
+                            menu = { song -> songMenu(song) },
+                            persistenceKey = "local-search",
+                            focusSearchOnOpen = searchFocusRequested,
+                            onSearchFocusHandled = { searchFocusRequested = false },
+                            emptyTitle = DesktopStrings["d_no_music_on_this_computer", "No music on this computer"],
+                            emptyDescription = DesktopStrings["d_put_audio_in_your_music_folder", "Put audio files in your Music folder and this page will fill up."],
+                        )
                         destination == DesktopDestination.SEARCH -> SearchScreen(
                             query = query,
                             onQueryChange = ::editQuery,
@@ -4626,7 +4645,14 @@ private fun DesktopSidebar(
             Spacer(Modifier.height(6.dp))
             HorizontalDivider(color = desktopChromeDivider())
             Spacer(Modifier.height(12.dp))
-            val visibleAccount = accountPlaylists.filterNot { "account:${it.browseId}" in hiddenSidebar }
+            // Playlists belonging to an account are YouTube's, so a local build has none
+            // to list and no account to have made them. The ones kept on this
+            // computer are its own and stay.
+            val visibleAccount = if (DesktopVariant.isLocal) {
+                emptyList()
+            } else {
+                accountPlaylists.filterNot { "account:${it.browseId}" in hiddenSidebar }
+            }
             val visibleLocal = localPlaylists.filterNot { "local:${it.id}" in hiddenSidebar }
             LazyColumn(
                 modifier = Modifier.fillMaxWidth().weight(1f),
@@ -5478,6 +5504,9 @@ private fun DesktopLocalMusicPage(
     emptyTitle: String = DesktopStrings["d_no_music_on_this_computer", "No music on this computer"],
     emptyDescription: String = DesktopStrings["d_put_audio_in_your_music_folder", "Put audio files in your Music folder and this page will fill up."],
     persistenceKey: String,
+    /** Asks the search field for focus as the page opens, for the same reason. */
+    focusSearchOnOpen: Boolean = false,
+    onSearchFocusHandled: () -> Unit = {},
     menu: (@Composable (Song) -> Unit)? = null,
 ) {
     val persistence = remember { DesktopPersistence() }
@@ -5525,11 +5554,22 @@ private fun DesktopLocalMusicPage(
             Modifier.fillMaxSize().padding(horizontal = DesktopPageGutter),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                val focusRequester = remember { FocusRequester() }
+                // Search arrives here with the intent to be typed into, and the
+                // native text input has to be asked after the field is laid out.
+                LaunchedEffect(focusSearchOnOpen) {
+                    if (focusSearchOnOpen) {
+                        yield()
+                        focusRequester.requestFocus()
+                        onSearchFocusHandled()
+                    }
+                }
                 DesktopSearchField(
                     query = searchQuery,
                     onQueryChange = { searchQuery = it },
                     onSearch = {},
                     modifier = Modifier.weight(1f),
+                    focusRequester = focusRequester,
                     placeholder = DesktopStrings["d_search_your_music", "Search your music"],
                 )
                 Spacer(Modifier.width(10.dp))
@@ -6523,18 +6563,18 @@ private fun DesktopSettingsScreen(
 /** The line at the foot of the settings sheet, as Android has it. */
 @Composable
 private fun DesktopSettingsFooter(onLicenses: () -> Unit) {
-    val version = remember { System.getProperty("bitchord.version") ?: "1.8-beta1" }
+    val version = remember { System.getProperty("bitchord.version") ?: "1.0.0" }
     val linkStyles = TextLinkStyles(
         style = SpanStyle(color = DesktopAccent, textDecoration = TextDecoration.Underline),
     )
     Text(
         text = buildAnnotatedString {
-            append("bitchord $version  ")
-            withLink(LinkAnnotation.Url("https://github.com/kushagrasinghx/BitChord", linkStyles)) {
+            append("${DesktopVariant.appName.lowercase()} $version  ")
+            withLink(LinkAnnotation.Url("https://github.com/Polaricito/Bitchord-Local", linkStyles)) {
                 append("GitHub")
             }
             append("  ")
-            withLink(LinkAnnotation.Url("https://github.com/kushagrasinghx", linkStyles)) {
+            withLink(LinkAnnotation.Url("https://github.com/Polaricito", linkStyles)) {
                 append("Developer")
             }
             append("  ")
@@ -6545,7 +6585,10 @@ private fun DesktopSettingsFooter(onLicenses: () -> Unit) {
             withLink(LinkAnnotation.Clickable("licenses", linkStyles) { onLicenses() }) {
                 append("Licenses")
             }
-            append("\n~YouTube Music Backend")
+            // Which of the two players this is. It used to say so in the only words it had
+            // - "YouTube Music Backend" - which described the backend rather than the
+            // build, and so was true of both.
+            append("\n~${DesktopVariant.label}")
         },
         style = MaterialTheme.typography.labelSmall,
         color = DesktopSecondary,

@@ -40,7 +40,20 @@ class DesktopBeatModelTest {
         // failed - the same way a library that is not in the build is handled above.
         // A model missing from the build, by contrast, is a real failure, and is
         // still asserted above.
-        if (failure != null && generateSequence(failure) { it.cause }.any { it is UnsatisfiedLinkError }) {
+        //
+        // All three shapes are recognised because only the first one carries the
+        // cause. The attempt that trips the static initialiser throws
+        // ExceptionInInitializerError wrapping the UnsatisfiedLinkError; every
+        // attempt after that throws a bare NoClassDefFoundError with no cause at
+        // all. Which one comes out depends on whether anything else in the JVM
+        // touched OrtSession first, so a test that only handles one of the two
+        // passes on a clean run and fails on a re-run - the worst way round.
+        val runtimeCannotStart = failure != null && (
+            generateSequence(failure) { it.cause }.any { it is UnsatisfiedLinkError } ||
+                failure is ExceptionInInitializerError ||
+                failure is NoClassDefFoundError
+            )
+        if (runtimeCannotStart) {
             println("ONNX Runtime will not initialise on this CPU - skipping")
             return
         }

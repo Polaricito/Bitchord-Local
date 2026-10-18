@@ -7,7 +7,26 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 val appVersion: String = providers.gradleProperty("bitchord.version").orNull
     ?.removePrefix("v")
     ?.takeIf { it.isNotBlank() }
-    ?: "1.8-beta1"
+    ?: "1.0.0"
+
+/**
+ * Which player this package is.
+ *
+ * `full` is the whole app. `local` is the same player with YouTube Music taken
+ * out: no streaming source, no account, no playlists from a service - and its
+ * Search answers from the listener's own library instead. The difference is a
+ * flag rather than a second module, so the two cannot drift apart, and a local
+ * build never reaches for YouTube at all.
+ *
+ * It reaches the app the same way the version does, as a system property, so
+ * there is nothing to configure at runtime and nothing to get wrong.
+ */
+val requestedVariant = (providers.gradleProperty("bitchord.variant").orNull ?: "full").lowercase()
+require(requestedVariant == "local" || requestedVariant == "full") {
+    "bitchord.variant must be 'full' or 'local', not '$requestedVariant'"
+}
+val appVariant = requestedVariant
+val isLocalVariant = appVariant == "local"
 
 /** Which platform this build is *for*, which is the host unless told otherwise. */
 val hostIsWindows = System.getProperty("os.name").contains("Windows", ignoreCase = true)
@@ -24,9 +43,10 @@ val hostArch = System.getProperty("os.arch").lowercase()
 val isArm64 = hostArch == "aarch64" || hostArch == "arm64"
 
 // Windows installer metadata requires MAJOR.MINOR.BUILD even though the app's public version is
-// intentionally displayed without a patch number (1.7 rather than 1.7.0).
+// intentionally displayed without a patch number (1.0 rather than 1.0.0).
 // The build number is the desktop version code; it also keeps "-beta1" out of the numeric installer version.
-val desktopVersionCode = 29
+// It counts this project's own releases, which start here, so it does not continue upstream's.
+val desktopVersionCode = providers.gradleProperty("bitchord.versionCode").orNull?.toIntOrNull() ?: 1
 val nativePackageVersion = appVersion.substringBefore('-').split('.').take(2).joinToString(".") + ".$desktopVersionCode"
 
 // FFmpeg decodes audio; see DesktopAudioDecoder.
@@ -511,6 +531,7 @@ compose.desktop {
         jvmArgs("-Xmx512m")
         jvmArgs("-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=20000", "-XX:G1PeriodicGCSystemLoadThreshold=0")
         jvmArgs("-Dbitchord.version=$appVersion")
+        jvmArgs("-Dbitchord.variant=$appVariant")
         if (desktopModuleIndexUrl.isNotBlank()) {
             jvmArgs("-Dbitchord.module.index=$desktopModuleIndexUrl")
         }
@@ -537,9 +558,16 @@ compose.desktop {
                 TargetFormat.Deb,
                 TargetFormat.Rpm,
             )
-            packageName = "BitChord"
+            // The two variants are separate programs on the machine, so they get separate
+            // names: installing one must not silently replace the other, or
+            // uninstalling one must not take the other with it.
+            packageName = if (isLocalVariant) "BitChord Local" else "BitChord"
             packageVersion = nativePackageVersion
-            description = if (targetOs == "windows") "BitChord" else "Aesthetic YouTube Music client"
+            description = when {
+                targetOs != "windows" -> "Aesthetic YouTube Music client"
+                isLocalVariant -> "BitChord Local - local music player"
+                else -> "BitChord"
+            }
             vendor = "BitChord contributors"
             copyright = "Copyright © 2026 BitChord contributors"
 

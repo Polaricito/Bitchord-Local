@@ -15,8 +15,16 @@ concurrency:
 # desktopApp/build.gradle.kts is still there for whenever they are wanted back.
 jobs:
   desktop-windows:
-    name: Desktop · Windows
+    name: Desktop · Windows · ${{ matrix.variant }}
     runs-on: windows-latest
+    # A matrix rather than two builds in one job, for the same reason as in
+    # release.yml: the variant is not a declared input of Compose's packaging
+    # tasks, so a second build in the same workspace would hand back the first
+    # variant's installer under the second's name.
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [full, local]
     steps:
       - uses: actions/checkout@v4
 
@@ -49,21 +57,22 @@ jobs:
         run: cmake --version
 
       - name: Tests
+        if: matrix.variant == 'full'
         run: .\gradlew.bat :shared:jvmTest :desktopUi:jvmTest :desktopApp:test
 
       - name: Build the distributable
-        run: .\gradlew.bat :desktopApp:createDistributable
+        run: .\gradlew.bat :desktopApp:createDistributable "-Pbitchord.variant=${{ matrix.variant }}"
 
       # The installer, not just the runnable folder: a listener should be able to
       # take the artefact from this run and install it without a JDK, a toolchain
       # or a command line.
       - name: Build the installer
-        run: .\gradlew.bat :desktopApp:packageExe
+        run: .\gradlew.bat :desktopApp:packageExe "-Pbitchord.variant=${{ matrix.variant }}"
 
       - name: The analyser is in the jar
         shell: bash
         run: |
-          jar=$(ls desktopApp/build/compose/binaries/main/app/BitChord/app/desktopApp*.jar)
+          jar=$(ls desktopApp/build/compose/binaries/main/app/*/app/desktopApp*.jar)
           jar tf "$jar" | grep -q 'native/bitchord_analysis.dll'
           jar tf "$jar" | grep -q 'models/.*\.onnx'
           # WinRT, so only MSVC can build it and only this job ever does.
@@ -75,7 +84,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: BitChord-Windows-Setup
+          name: BitChord-${{ matrix.variant }}-Windows-Setup
           path: desktopApp/build/compose/binaries/main/exe/*.exe
 
       - name: Upload test reports
