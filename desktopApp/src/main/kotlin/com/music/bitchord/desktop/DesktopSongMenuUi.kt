@@ -393,7 +393,11 @@ internal fun DesktopSongMenu(
         // A saved copy is offered its own way out whatever the track is playing from — a download
         // being played *is* a local file, and hiding the row there left no way to remove it.
         // Only starting a new download needs a YouTube identity behind it.
-        when {
+        //
+        // A local build has none for any track: `downloadSong` gives up as soon as
+        // it sees a local path, so every row here would be a button that reports
+        // nothing and changes nothing.
+        if (!DesktopVariant.isLocal) when {
             downloadInProgress -> DesktopMenuRow(
                 icon = BitChordIcons.Download,
                 label = DesktopStrings["cancel_download", "Cancel download"],

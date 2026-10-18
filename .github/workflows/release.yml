@@ -77,7 +77,7 @@ jobs:
 
       - name: Build msi, exe and the app image
         run: |
-          .\gradlew.bat :desktopApp:packageMsi :desktopApp:packageExe :desktopApp:createDistributable `
+          .\gradlew.bat :desktopApp:packageMsi :desktopApp:packageExe :desktopApp:packagePortable `
             "-Pbitchord.version=${{ steps.version.outputs.value }}" `
             "-Pbitchord.variant=${{ matrix.variant }}"
 

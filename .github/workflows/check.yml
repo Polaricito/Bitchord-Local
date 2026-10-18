@@ -61,7 +61,7 @@ jobs:
         run: .\gradlew.bat :shared:jvmTest :desktopUi:jvmTest :desktopApp:test
 
       - name: Build the distributable
-        run: .\gradlew.bat :desktopApp:createDistributable "-Pbitchord.variant=${{ matrix.variant }}"
+        run: .\gradlew.bat :desktopApp:packagePortable "-Pbitchord.variant=${{ matrix.variant }}"
 
       # The installer, not just the runnable folder: a listener should be able to
       # take the artefact from this run and install it without a JDK, a toolchain
@@ -82,10 +82,22 @@ jobs:
         shell: bash
         run: ls -lh desktopApp/build/compose/binaries/main/exe/*.exe
 
+      - name: The portable build was produced
+        shell: bash
+        run: ls -lh desktopApp/build/distributions/*.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: BitChord-${{ matrix.variant }}-Windows-Setup
           path: desktopApp/build/compose/binaries/main/exe/*.exe
+
+      # The same app as a folder to unzip and run: no installer, nothing in
+      # Program Files, nothing to uninstall. For the listener who wants the new
+      # build without installing it over the old one every time.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BitChord-${{ matrix.variant }}-Windows-Portable
+          path: desktopApp/build/distributions/*.zip
 
       - name: Upload test reports
         if: failure()

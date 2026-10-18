@@ -590,6 +590,17 @@ fun BitChordDesktopApp() {
     }
     // The order the queue was in before shuffle rearranged it, so the toggle can be undone.
     var preShuffleOrder by remember { mutableStateOf<List<String>>(emptyList()) }
+    // The queue as this session started it, which repeat-all rewinds to.
+    //
+    // [liveQueue] is a sliding window: `DesktopQueue.afterTransition` drops everything
+    // more than `DesktopQueue.MAX_HISTORY` behind the current song, so by the time the
+    // last track of a long album plays, songs[0] is not the first track of the album any
+    // more - it is whichever one happened to be 26 tracks back. Rewinding there repeats
+    // that window instead of the album, which is why "it went back to a song I had
+    // already heard" and not to the start.
+    var repeatHead by remember {
+        mutableStateOf(DesktopQueue.restored(persistence.queue(), 0).songs)
+    }
     // One party AutoPlay top-up at a time; see topUpPartyAutoplay.
     val partyAutoplayLock = remember { Mutex() }
     val queue = liveQueue.songs
@@ -626,7 +637,12 @@ fun BitChordDesktopApp() {
     var trackLinks by remember { mutableStateOf<Song?>(null) }
     // Settings is a modal over whatever page is open, the way Music puts its own preferences in a
     // sheet rather than a navigation destination.
-    var autoplay by remember { mutableStateOf(persistence.boolean("autoplay", true)) }
+    // AutoPlay asks YouTube Music for a station around each track, so it is the
+    // streaming service's own recommendation engine wearing a different name. A
+    // local build has nothing to ask: every track it knows is already in the
+    // library behind Home. Forced off rather than merely hidden, because the
+    // request is made from a top-up effect that runs on every track change.
+    var autoplay by remember { mutableStateOf(!DesktopVariant.isLocal && persistence.boolean("autoplay", true)) }
     var dontRepeatSuggestions by remember {
         mutableStateOf(persistence.boolean(KEY_DONT_REPEAT_SUGGESTIONS, false))
     }
@@ -861,6 +877,7 @@ fun BitChordDesktopApp() {
         }
         liveQueue = DesktopQueue(songs, index = 0)
         preShuffleOrder = emptyList()
+        repeatHead = songs
         playCurrent(startPlaying)
     }
 
@@ -927,8 +944,10 @@ fun BitChordDesktopApp() {
         // Past the end still means the last row, as the clamp here always did.
         val at = resolved.indexOfFirst { it.index >= startIndex }.takeIf { it >= 0 } ?: resolved.lastIndex
         if (DesktopListenTogether.state.value.inParty) {
-            liveQueue = DesktopQueue(partyPlaybackQueue(playable[at]), index = 0)
+            val partyQueue = partyPlaybackQueue(playable[at])
+            liveQueue = DesktopQueue(partyQueue, index = 0)
             preShuffleOrder = emptyList()
+            repeatHead = partyQueue
             playCurrent()
             return
         }
@@ -948,6 +967,7 @@ fun BitChordDesktopApp() {
             DesktopQueue.startingAt(built.timeline, built.startIndex)
         }
         preShuffleOrder = if (shuffle) built.timeline.map(DesktopQueue::orderKey) else emptyList()
+        repeatHead = built.timeline
         playCurrent()
     }
 
@@ -1047,12 +1067,14 @@ fun BitChordDesktopApp() {
             if (partyTrackChangeBlocked()) return@launch
             if (liveQueue.current?.videoId == seed.videoId) {
                 liveQueue = DesktopQueue(listOf(liveQueue.current!!) + related, index = 0)
+                repeatHead = liveQueue.songs
                 saveQueue()
                 partySyncHolder[0]?.onLocalIntent()
             } else {
                 val station = listOf(seed.asQueueEntry(QueueTier.CONTEXT)) + related
                 liveQueue = if (shuffle) DesktopQueue.shuffledStartingAt(station, 0) else DesktopQueue(station, 0)
                 preShuffleOrder = if (shuffle) station.map(DesktopQueue::orderKey) else emptyList()
+                repeatHead = station
                 playCurrent()
             }
             DesktopTrackLog.log("radio: started a station on '${song.title}' with ${related.size} tracks")
@@ -1336,6 +1358,8 @@ fun BitChordDesktopApp() {
      */
     fun setAutoplay(enabled: Boolean) {
         if (DesktopListenTogether.state.value.controlsLocked) return
+        // Nowhere in a local build to turn it on to: see the declaration of [autoplay].
+        if (enabled && DesktopVariant.isLocal) return
         autoplay = enabled
         persistence.saveBoolean("autoplay", enabled)
         autoplayJob?.cancel()
@@ -1380,11 +1404,26 @@ fun BitChordDesktopApp() {
                 playCurrent()
             }
             repeatMode == DesktopRepeatMode.ALL && liveQueue.songs.isNotEmpty() -> {
-                liveQueue = liveQueue.copy(index = 0)
+                // Rewound to the queue this session started from, not to songs[0]:
+                // the live queue is a sliding window and songs[0] is by now some
+                // track from the middle of what was played. See [repeatHead].
+                val head = repeatHead
+                if (head.isEmpty()) {
+                    liveQueue = liveQueue.copy(index = 0)
+                } else {
+                    liveQueue = DesktopQueue(head, index = 0)
+                    preShuffleOrder = emptyList()
+                }
                 playCurrent()
             }
             DesktopAutoplay.enabled(DesktopListenTogether.state.value, autoplay) ->
                 loadAutoplaySongs(playFirst = true)
+            else -> {
+                // Nothing left to play. Stop where it ran out rather than sitting
+                // on the last track with the transport still going.
+                DesktopTrackLog.log("queue: ran out after ${liveQueue.songs.size} track(s); stopped")
+                playbackEngine.pause()
+            }
         }
     }
 
@@ -4649,7 +4688,10 @@ private fun DesktopSidebar(
                 )
             }
             val queued by DesktopDownloadQueue.active.collectAsState()
-            if (DOWNLOADS_KEY !in hiddenSidebar) {
+            // Nothing is downloaded in a local build: every track is already a
+            // file the library owns, and Home lists all of them. The page would
+            // hold an empty list and a "no downloads" message forever.
+            if (DOWNLOADS_KEY !in hiddenSidebar && !DesktopVariant.isLocal) {
                 DesktopSidebarItem(
                     BitChordIcons.Download,
                     if (queued.isEmpty()) "Downloads" else "Downloads · ${queued.size}",
@@ -5804,6 +5846,10 @@ private enum class DesktopSettingsSection {
         get() = when (this) {
             // An account, and the sources it would stream from and play them with.
             ACCOUNT, SOURCES -> false
+            // Download quality is the bitrate a track is fetched at, and nothing
+            // is fetched: the files are already on this disk at whatever they
+            // were encoded at.
+            DOWNLOADS -> false
             // A party agrees on what is playing by its video id, and a local file's
             // is `local:<absolute path>` - true only on this machine, and skipped by
             // the sync itself, which returns early for anything played from disk.
@@ -6080,12 +6126,16 @@ private fun DesktopSettingsScreen(
             }
             if (section == DesktopSettingsSection.DESKTOP_PLAYBACK) item {
                 SettingsGroup(DesktopStrings["d_desktop_playback", "Desktop playback"]) {
-                    SettingsToggle(
-                        DesktopStrings["autoplay", "Autoplay"],
-                        DesktopStrings["d_keep_the_music_going_with_similar_songs", "Keep the music going with similar songs"],
-                        autoplay,
-                        onAutoplayChange,
-                    )
+                    // Hidden rather than shown off: `setAutoplay` refuses in a local
+                    // build, so a switch here would not move and would look broken.
+                    if (!DesktopVariant.isLocal) {
+                        SettingsToggle(
+                            DesktopStrings["autoplay", "Autoplay"],
+                            DesktopStrings["d_keep_the_music_going_with_similar_songs", "Keep the music going with similar songs"],
+                            autoplay,
+                            onAutoplayChange,
+                        )
+                    }
                     SettingsToggle(
                         DesktopStrings["shuffle", "Shuffle"],
                         DesktopStrings["d_mix_the_order_of_the_current_queue", "Mix the order of the current queue"],

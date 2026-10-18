@@ -137,7 +137,6 @@ import com.music.bitchord.ui.haptics.Haptic
 import com.music.bitchord.ui.haptics.Haptics
 import com.music.bitchord.ui.haptics.rememberHaptics
 import com.music.bitchord.ui.icons.BitChordIcons
-import com.music.bitchord.ui.rememberIsForeground
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
@@ -758,21 +757,32 @@ private fun rememberLyricClock(
         }
     }
 
-    // Gated on the app being on screen. The loop asks for a frame, writes a
-    // value that invalidates a drawing, and is handed the next frame for it —
-    // which is a request to render continuously for as long as it runs. That is
-    // the right trade for a lyric being read and the wrong one for a phone in a
-    // pocket, and the composition alone cannot tell the two apart.
+    // The loop asks for a frame, writes a value that invalidates a drawing, and
+    // is handed the next frame for it — which is a request to render
+    // continuously for as long as it runs.
+    //
+    // Nothing here gates that on the window having the focus, because a desktop
+    // window that is not focused is still on screen. It used to be gated on the
+    // lifecycle's RESUMED, which on a desktop tracks the focus: clicking into
+    // another application left the playback clock counting and the words
+    // standing still, so the player's own two views of where the song was
+    // disagreed, and only while another window was in front.
+    //
+    // Nor is it gated on the window being shown. A window that is iconified or
+    // hidden is given no paint events, so nothing invalidates a drawing and no
+    // frames arrive for this to run on: the loop is already only as fast as the
+    // window hands out frames.
     //
     // Every start is a fresh run from the latest reading, so neither a pause
-    // nor a spell in the background is mistaken for one very long frame.
+    // nor a spell in the background is mistaken for one very long frame — a
+    // window restored after ten minutes opens on the line it should be on
+    // rather than gliding there from where it was left.
     //
     // One loop for the whole run, reading the playhead itself. Keyed on the
     // reading instead, every reading restarted it, and each restart spent a
     // frame waiting for its first frame time — a hitch twice a second.
-    val foreground = rememberIsForeground()
-    LaunchedEffect(engine, playhead, isPlaying, foreground) {
-        if (!isPlaying || !foreground) return@LaunchedEffect
+    LaunchedEffect(engine, playhead, isPlaying) {
+        if (!isPlaying) return@LaunchedEffect
         engine.restart()
         while (true) {
             withFrameNanos { frameNanos ->
@@ -1607,14 +1617,13 @@ internal fun LyricsTranslationMotion(
     content: @Composable (State<Float>?) -> Unit,
 ) {
     val progress = remember { Animatable(1f) }
-    val foreground = rememberIsForeground()
-    // Reopening the panel or returning from the background must not replay a
-    // previous toggle. A new toggle cancels the previous effect automatically.
+    // Reopening the panel must not replay a previous toggle. A new toggle
+    // cancels the previous effect automatically.
     var consumedTrigger by remember { mutableIntStateOf(trigger) }
-    LaunchedEffect(trigger, reduceMotion, foreground) {
+    LaunchedEffect(trigger, reduceMotion) {
         val changed = trigger != consumedTrigger
         consumedTrigger = trigger
-        if (!changed || trigger <= 0 || reduceMotion || !foreground) {
+        if (!changed || trigger <= 0 || reduceMotion) {
             progress.snapTo(1f)
         } else {
             progress.snapTo(0f)
@@ -1630,7 +1639,7 @@ internal fun LyricsTranslationMotion(
         // particular, do not read progress in composition or apply a clipping
         // layer here: the panel's active line deliberately scales beyond its
         // measured bounds and its glow uses unbounded blur.
-        content(progress.asState().takeIf { !reduceMotion && foreground && trigger > 0 })
+        content(progress.asState().takeIf { !reduceMotion && trigger > 0 })
     }
 }
 

@@ -628,3 +628,34 @@ compose.desktop {
     }
 
 }
+
+/**
+ * The portable build: the same player as a folder to unzip and run, with no
+ * installer, nothing written to Program Files, and no entry in the installed
+ * programs list to uninstall from.
+ *
+ * Built out of `createDistributable`, which is jpackage's app-image - the very
+ * image the `.exe` installer is made from, so the two cannot differ in what they
+ * run. Compose leaves that image as a folder named after the package rather than
+ * as a zip, so the zipping is done here: a listener asks for "a zip I can carry
+ * on a stick", and not finding one is the difference between running the new
+ * build and waiting for an installer.
+ *
+ * The entries are the image's own folder, named after the package by jpackage,
+ * so unzipping gives `BitChord Local\BitChord Local.exe` rather than a pile of
+ * loose files to sort out. The directory is taken through a provider because it
+ * is written by the task this one depends on: reading it while this is being
+ * configured finds nothing, and a zip of nothing is a zip that fails silently.
+ */
+tasks.register<Zip>("packagePortable") {
+    group = "compose desktop"
+    description = "Builds the portable, no-installer distribution as a zip."
+    dependsOn("createDistributable")
+    archiveFileName.set("BitChord-${if (isLocalVariant) "local" else "full"}-$nativePackageVersion-windows-portable.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("distributions"))
+    from(layout.buildDirectory.dir("compose/binaries/main/app")) {
+        // The one package folder jpackage left in there, and nothing else that
+        // a previous run of this task may have written beside it.
+        include("*/**")
+    }
+}
