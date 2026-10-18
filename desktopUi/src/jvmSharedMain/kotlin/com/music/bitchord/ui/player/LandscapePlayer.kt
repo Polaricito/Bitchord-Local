@@ -629,7 +629,11 @@ internal fun LandscapeLyricsPane(
     hasLyrics: Boolean,
     /** Shown in place of the sheet while there are no lines to draw. */
     placeholder: String,
-    status: String,
+    /**
+     * The source line, or null where there is none - see [LyricsStatusWithChange],
+     * which draws nothing for it.
+     */
+    status: String?,
     onStatusClick: () -> Unit,
     /** Whether lines are being picked, which is what the bar stands in for. */
     picking: Boolean = false,

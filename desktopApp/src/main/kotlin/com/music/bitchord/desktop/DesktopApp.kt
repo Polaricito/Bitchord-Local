@@ -488,8 +488,21 @@ private enum class DesktopDestination(val id: String, val label: String) {
     SEARCH("search", "Search"),
     HISTORY("history", "History"),
     DOWNLOADS("downloads", "Downloads"),
-    SETTINGS("settings", "Settings"),
-}
+    SETTINGS("settings", "Settings"),}
+
+/**
+ * The page this destination really opens.
+ *
+ * A local build has no Search page: there is nothing to search that is not
+ * already on Home, and Home already has the field, the same grouping and the
+ * same three sections. Two of them side by side, both listing this computer's
+ * own files, is one page too many - so Search is folded into Home here and the
+ * tab is not drawn. Anything that asks for Search - the sidebar's field, a
+ * submitted query, the compact window's navigation - lands on Home, which is
+ * where the search it wanted is.
+ */
+private fun DesktopDestination.page(): DesktopDestination =
+    if (DesktopVariant.isLocal && this == DesktopDestination.SEARCH) DesktopDestination.LISTEN_NOW else this
 
 private enum class DesktopRepeatMode {
     OFF,
@@ -1411,7 +1424,15 @@ fun BitChordDesktopApp() {
                 if (head.isEmpty()) {
                     liveQueue = liveQueue.copy(index = 0)
                 } else {
-                    liveQueue = DesktopQueue(head, index = 0)
+                    // Shuffled again, the way the first play was: shuffle is a
+                    // statement about the order, not about one run of it, and a
+                    // repeat that dropped it back into the album's own order was
+                    // shuffle off for the one moment the listener would notice.
+                    liveQueue = if (shuffle) {
+                        DesktopQueue.shuffledStartingAt(head, 0)
+                    } else {
+                        DesktopQueue(head, index = 0)
+                    }
                     preShuffleOrder = emptyList()
                 }
                 playCurrent()
@@ -2252,7 +2273,7 @@ fun BitChordDesktopApp() {
     fun search() {
         if (query.isBlank() || searchLoading) return
         overlays.settingsPage = null
-        destination = DesktopDestination.SEARCH
+        destination = DesktopDestination.SEARCH.page()
         searchTyping = false
         searchSuggestions = emptyList()
         // Submitting is picking the first track the typeahead offered, as on the phone — or, with
@@ -2337,8 +2358,9 @@ fun BitChordDesktopApp() {
         overlays.settingsPage = null
         selectedMoodGenre = null
         libraryShowAll = null
-        if (next == DesktopDestination.SEARCH) searchFocusRequested = true
-        destination = next
+        val target = next.page()
+        if (target == DesktopDestination.SEARCH) searchFocusRequested = true
+        destination = target
     }
 
     // Settings' search and scroll outlive a visit to one of its pages, and start over each time
@@ -3269,7 +3291,11 @@ fun BitChordDesktopApp() {
                         query = query,
                         onQueryChange = { text ->
                             editQuery(text)
-                            if (destination != DesktopDestination.SEARCH || overlays.settingsPage != null) {
+                            // Compared against the page that would actually open, so
+                            // typing into the sidebar's field on a page that is
+                            // already where it lands does not re-select it on every
+                            // keystroke and clear what it was showing.
+                            if (destination != DesktopDestination.SEARCH.page() || overlays.settingsPage != null) {
                                 selectDestination(DesktopDestination.SEARCH)
                             }
                         },
@@ -4125,26 +4151,14 @@ fun BitChordDesktopApp() {
                             },
                             contentPadding = sharedPagePadding,
                             menu = { song -> songMenu(song) },
-                            persistenceKey = "home",
-                        )
-                        // In a local build there is no service to ask, so Search answers
-                        // from the music on this computer. It is the same page Home
-                        // uses, opened on the flat list of tracks rather than grouped,
-                        // because "find one song I own" and "browse what I own" are
-                        // different questions and this is the one this tab is for.
-                        destination == DesktopDestination.SEARCH &&
-                            DesktopVariant.isLocal -> DesktopLocalMusicPage(
-                            songs = localSongs,
-                            onSongClick = { list, index ->
-                                playSongs(list, index, DesktopQueueSource(DesktopStrings["search", "Search"], PlaybackSourceType.SEARCH))
-                            },
-                            contentPadding = sharedPagePadding,
-                            menu = { song -> songMenu(song) },
-                            persistenceKey = "local-search",
+                            // The sidebar's field lands here too in a local build, so
+                            // this is where a typed query is read. See
+                            // DesktopDestination.page.
                             focusSearchOnOpen = searchFocusRequested,
                             onSearchFocusHandled = { searchFocusRequested = false },
                             emptyTitle = DesktopStrings["d_no_music_on_this_computer", "No music on this computer"],
                             emptyDescription = DesktopStrings["d_put_audio_in_your_music_folder", "Put audio files in your Music folder and this page will fill up."],
+                            persistenceKey = "home",
                         )
                         destination == DesktopDestination.SEARCH -> SearchScreen(
                             query = query,
@@ -4672,8 +4686,11 @@ private fun DesktopSidebar(
             DesktopSidebarItem(BitChordIcons.Home, DesktopStrings["home", "Home"], destination == DesktopDestination.LISTEN_NOW) {
                 onDestinationSelected(DesktopDestination.LISTEN_NOW)
             }
-            DesktopSidebarItem(BitChordIcons.Search, "Search", destination == DesktopDestination.SEARCH) {
-                onDestinationSelected(DesktopDestination.SEARCH)
+            // No Search row in a local build: see DesktopDestination.page.
+            if (!DesktopVariant.isLocal) {
+                DesktopSidebarItem(BitChordIcons.Search, "Search", destination == DesktopDestination.SEARCH) {
+                    onDestinationSelected(DesktopDestination.SEARCH)
+                }
             }
             Spacer(Modifier.height(6.dp))
             HorizontalDivider(color = desktopChromeDivider())
@@ -4928,7 +4945,10 @@ private fun DesktopFloatingNavigation(
     val tabs = listOf(
         DesktopDestination.LISTEN_NOW to (BitChordIcons.Home to "Home"),
         DesktopDestination.SEARCH to (BitChordIcons.Search to "Search"),
-    )
+        // Folded into Home where they are the same page, so this capsule holds
+        // one button rather than two that open the same thing. See
+        // DesktopDestination.page.
+    ).filterNot { (item, _) -> item.page() != item }
     val selected = tabs.firstOrNull { it.first == destination }?.first ?: DesktopDestination.LISTEN_NOW
     val shape = RoundedCornerShape(percent = 50)
     Surface(

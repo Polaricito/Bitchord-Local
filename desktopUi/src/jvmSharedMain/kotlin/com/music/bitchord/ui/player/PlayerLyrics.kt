@@ -558,14 +558,19 @@ private data class TranslationParticle(
  * The link is absent where it has nothing to open: a line that only says the
  * lookup is still running is a fact, and one that says there are no lyrics is a
  * finding rather than a choice.
+ *
+ * Nothing is drawn at all for a null [status], which is the case where the only
+ * thing that could be said is where the lyrics came from in a file the reader is
+ * already looking at.
  */
 @Composable
 internal fun LyricsStatusWithChange(
-    status: String,
+    status: String?,
     /** Present when [status] names something the reader can switch away from. */
     onStatusClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
+    if (status == null) return
     val haptics = rememberHaptics()
     Row(
         modifier = modifier,
@@ -3036,8 +3041,11 @@ internal class LyricsTranslationUi(
     /** Bumped on every switch between versions — the particle motion's trigger. */
     val transition: Int,
     val reduceMotion: Boolean,
-    /** The line naming the lyrics' source, or what the translation is doing. */
-    val status: String,
+    /**
+     * The line naming the lyrics' source, or what the translation is doing, or
+     * null where there is nothing to say - see [lyricsStatus].
+     */
+    val status: String?,
     val toggleTranslation: () -> Unit,
     val toggleRomanization: () -> Unit,
 )
@@ -3234,6 +3242,12 @@ internal fun rememberLyricsTranslation(
     // Worked out once for both layouts — the portrait player puts it over its
     // half-player, the landscape one under its lyric column — so the two can
     // never disagree about what it says.
+    //
+    // Null, and nothing drawn, for lyrics read out of the file. There was a
+    // string here for that case - "Lyrics saved with this download" - and it was
+    // wrong on both counts: nothing was downloaded, and the reader already knows
+    // where the words came from, since it is their own file. A caption that only
+    // restates what the screen is showing is not a caption.
     val status = when {
         translationState is LyricsTranslationUiState.Loading ->
             stringResource(Res.string.translating_lyrics_to, translationLanguageName)
@@ -3250,7 +3264,7 @@ internal fun rememberLyricsTranslation(
         lyricsSource != null -> stringResource(Res.string.lyrics_by, lyricsSource.label)
         lyricsUnavailable -> stringResource(Res.string.no_lyrics_found)
         lyrics.isNullOrEmpty() -> loadingText
-        else -> stringResource(Res.string.lyrics_saved_with_download)
+        else -> null
     }
 
     return LyricsTranslationUi(
