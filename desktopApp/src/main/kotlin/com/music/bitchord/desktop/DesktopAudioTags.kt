@@ -52,6 +52,22 @@ internal object DesktopAudioTags {
     fun read(path: Path): DesktopTrackTags = runCatching { readStrictly(path) }
         .getOrElse { DesktopTrackTags() }
 
+    /**
+     * The lyrics inside [path], or null when it has none.
+     *
+     * A read of its own rather than a field off [read], on purpose: the caller
+     * wants one string and not the picture, and taking the cover out of every
+     * file in the library just to look at its words would write one per track on
+     * a path that never shows one.
+     *
+     * This is the reader for MP3. [DesktopEmbeddedLyrics] walks FLAC, MP4 and
+     * Matroska by hand because it has to reach a word-timed field nothing else
+     * publishes; ID3 is read here instead, where the tag library already is.
+     */
+    fun lyrics(path: Path): String? = runCatching {
+        AudioFileIO.read(path.toFile()).tag?.text(FieldKey.LYRICS)
+    }.getOrNull()
+
     private fun readStrictly(path: Path): DesktopTrackTags {
         val audioFile = AudioFileIO.read(path.toFile())
         val tag = audioFile.tag

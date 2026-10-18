@@ -11,16 +11,12 @@ import java.nio.file.Path
  * servers for them again on every play is a network round trip to arrive at a string already on
  * disk, and it is why a downloaded song showed nothing at all with the connection off.
  *
- * Two fields are read, in this order:
+ * FLAC, MP4 and Matroska are read by hand, in the order below, because they are where this app
+ * writes a word-timed form nothing else publishes. Anything the hand reader does not recognise -
+ * MP3 above all, which is what every other tagger writes - goes to the tag library instead.
  *
- *  - `BITCHORD_LYRICS`, this app's own, holding the enhanced A2 form with the word timings intact.
- *  - the container's standard lyrics field, holding plain `[mm:ss.xx]` LRC.
- *
- * The second is what every other player writes, so it is the fallback rather than the exception —
- * which also means a library tagged by something else is read correctly here.
- *
- * Never throws. A file that is not one of the three containers, or is one and has no lyrics in it,
- * is a null, and the caller falls back to the network.
+ * Never throws. A file that is not one of these containers, or is one and has no lyrics in it, is
+ * a null, and the caller falls back to the network.
  */
 internal object DesktopEmbeddedLyrics {
 
@@ -48,7 +44,7 @@ internal object DesktopEmbeddedLyrics {
                 buffer.copyOf(total)
             }
         }.getOrNull() ?: return null
-        return fromBytes(head)
+        return fromBytes(head) ?: DesktopAudioTags.lyrics(path)
     }
 
     /**

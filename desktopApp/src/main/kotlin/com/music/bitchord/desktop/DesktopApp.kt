@@ -3806,7 +3806,8 @@ fun BitChordDesktopApp() {
                                         persistence.saveBoolean(DesktopLyricsClient.KEY_LYRICS_BLUR, it)
                                     },
                                     enabledLyricsSources = DesktopLyricsClient.enabledSources(lyricsOrder, lyricsOn),
-                                    onOpenLyricsSources = { overlays.settingsPage = DesktopSettingsPage.LYRICS_SOURCES },
+                                    onOpenLyricsSources = { overlays.settingsPage = DesktopSettingsPage.LYRICS_SOURCES }
+                                    .takeIf { !DesktopVariant.isLocal },
                                     onOpenTranslationLanguage = { overlays.settingsPage = DesktopSettingsPage.TRANSLATION_LANGUAGE },
                                     onOpenEqualizer = { overlays.settingsPage = DesktopSettingsPage.EQUALIZER },
                                     onOpenAudioOutput = { overlays.settingsPage = DesktopSettingsPage.AUDIO_OUTPUT },
@@ -4502,7 +4503,12 @@ private fun DesktopTopBar(
                             modifier = Modifier.size(19.dp),
                         )
                     }
-                    DesktopAccountButton(avatar = accountAvatar, onClick = onOpenAccounts)
+                    // No account to switch in a local build: there is nothing behind it to sign
+                    // in to, and a button that opens an empty sheet is worse than
+                    // no button.
+                    if (!DesktopVariant.isLocal) {
+                        DesktopAccountButton(avatar = accountAvatar, onClick = onOpenAccounts)
+                    }
                 }
             }
             }
@@ -5755,6 +5761,14 @@ private fun DesktopLibraryGroupingContent(
 }
 
 /** Mobile's section order, with desktop-only groups placed beside their closest mobile counterpart. */
+/**
+ * The groups Settings shows, in order.
+ *
+ * A local build drops the ones whose subject does not exist in it: there is no
+ * account to manage, no service to choose a streaming source from, and no
+ * Spotify to connect. Lyrics stay, because the words in a file are still there
+ * to read - they are just the only place they come from.
+ */
 private enum class DesktopSettingsSection {
     ACCOUNT,
     LISTEN_TOGETHER,
@@ -5772,6 +5786,16 @@ private enum class DesktopSettingsSection {
     MISCELLANEOUS,
     LANGUAGE,
     ADVANCED,
+
+    ;
+
+    /** Whether this group has anything to say to a build that is [DesktopVariant.LOCAL]. */
+    val isLocalBuildRelevant: Boolean
+        get() = when (this) {
+            // An account, and the sources it would stream from and play them with.
+            ACCOUNT, SOURCES -> false
+            else -> true
+        }
 }
 
 /**
@@ -5819,7 +5843,11 @@ private fun DesktopSettingsScreen(
     onLyricsBlurChange: (Boolean) -> Unit,
     /** The sources that will actually be asked, in the order they are asked. */
     enabledLyricsSources: List<String>,
-    onOpenLyricsSources: () -> Unit,
+    /**
+     * Null where there is nowhere to choose from - a local build reads its words
+     * out of the file and has no provider to pick.
+     */
+    onOpenLyricsSources: (() -> Unit)?,
     onOpenTranslationLanguage: () -> Unit,
     onOpenEqualizer: () -> Unit,
     /** Opens the output-device picker. */
@@ -5899,7 +5927,9 @@ private fun DesktopSettingsScreen(
                     state = listState,
                     contentPadding = PaddingValues(top = 12.dp, bottom = 28.dp),
                 ) {
-            DesktopSettingsSection.entries.forEach { section ->
+            DesktopSettingsSection.entries
+                .filter { !DesktopVariant.isLocal || it.isLocalBuildRelevant }
+                .forEach { section ->
             if (section == DesktopSettingsSection.PLAYBACK) item {
                     SettingsGroup(DesktopStrings["playback", "Playback"]) {
                     if (!automix) {
@@ -6093,13 +6123,24 @@ private fun DesktopSettingsScreen(
                             lyricsBlur,
                             onLyricsBlurChange,
                         )
-                        SettingsNavigationRow(
-                            title = DesktopStrings["lyrics_sources", "Lyrics sources"],
-                            subtitle = enabledLyricsSources
-                                .joinToString(", ")
-                                .ifEmpty { "None. Lyrics will not be fetched." },
-                            onClick = onOpenLyricsSources,
-                        )
+                        if (onOpenLyricsSources != null) {
+                            SettingsNavigationRow(
+                                title = DesktopStrings["lyrics_sources", "Lyrics sources"],
+                                subtitle = enabledLyricsSources
+                                    .joinToString(", ")
+                                    .ifEmpty { "None. Lyrics will not be fetched." },
+                                onClick = onOpenLyricsSources,
+                            )
+                        } else {
+                            // Said rather than hidden: a build that reads nothing but
+                            // the file should still say where the words come from.
+                            SettingsRow(
+                                icon = BitChordIcons.LyricsQuote,
+                                title = DesktopStrings["lyrics_sources", "Lyrics sources"],
+                                subtitle = DesktopLyricsClient.IN_FILE_SOURCE,
+                                onClick = null,
+                            )
+                        }
                         val translationLanguage by DesktopTranslationSetting.language.collectAsState()
                         SettingsNavigationRow(
                             title = DesktopStrings["translation_language", "Translation language"],

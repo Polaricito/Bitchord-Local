@@ -39,6 +39,12 @@ object DesktopLyricsClient {
     internal const val KEY_LYRICS_SOURCES_SEEN = "lyrics_sources_seen"
     internal const val KEY_LYRICS_ORDER = "lyrics_source_order"
 
+    /**
+     * What the lyrics panel says when they came out of the file rather than a
+     * server. A local build only ever says this.
+     */
+    internal const val IN_FILE_SOURCE = "In file"
+
     /** One lyric database, as the settings screen needs to describe it. */
     internal data class Source(val name: String, val detail: String, val wordSynced: Boolean)
 
@@ -74,6 +80,17 @@ object DesktopLyricsClient {
         if (!persistence.boolean(KEY_SYNCED_LYRICS, true)) {
             return Result.failure(IllegalStateException("Synced lyrics are switched off"))
         }
+
+        // A local build has no servers to ask. Whatever the file says is the answer, and a file
+        // that says nothing has no lyrics - there is no third outcome, and no fallback that would
+        // quietly turn this into the other player. Forced, not merely preferred: the only way a
+        // local track ever shows words is if they were written into it.
+        if (DesktopVariant.isLocal) {
+            val embedded = embedded(song)
+                ?: return Result.failure(IllegalStateException("This file has no lyrics inside it"))
+            return Result.success(DesktopLyrics(IN_FILE_SOURCE, embedded))
+        }
+
         val configured = enabledSources(persistence.lyricsSourceOrder(), persistence.lyricsEnabledSources())
             .mapNotNull(::lyricsSourceNamed)
         val asked = only?.let(::lyricsSourceNamed)?.let(::listOf) ?: configured
