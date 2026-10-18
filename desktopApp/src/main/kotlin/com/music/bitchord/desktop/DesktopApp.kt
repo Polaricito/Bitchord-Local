@@ -4070,8 +4070,8 @@ fun BitChordDesktopApp() {
                         // on this page is a recommendation.
                         destination == DesktopDestination.LISTEN_NOW -> DesktopLocalMusicPage(
                             songs = localSongs,
-                            onSongClick = {
-                                playSong(it, source = DesktopQueueSource(DesktopStrings["home", "Home"], PlaybackSourceType.BROWSE))
+                            onSongClick = { list, index ->
+                                playSongs(list, index, DesktopQueueSource(DesktopStrings["home", "Home"], PlaybackSourceType.BROWSE))
                             },
                             contentPadding = sharedPagePadding,
                             menu = { song -> songMenu(song) },
@@ -4181,7 +4181,9 @@ fun BitChordDesktopApp() {
                         destination == DesktopDestination.DOWNLOADS -> Box(Modifier.fillMaxSize()) {
                             DesktopDownloadsPage(
                                 downloads = downloads,
-                                onSongClick = { playSong(it, source = DesktopQueueSource(DesktopStrings["downloads", "Downloads"], PlaybackSourceType.BROWSE)) },
+                                onSongClick = { list, index ->
+                                    playSongs(list, index, DesktopQueueSource(DesktopStrings["downloads", "Downloads"], PlaybackSourceType.BROWSE))
+                                },
                                 contentPadding = contentPadding,
                                 menu = { song -> songMenu(song) },
                             )
@@ -5435,7 +5437,7 @@ private fun DesktopHistoryPage(
 @Composable
 private fun DesktopDownloadsPage(
     downloads: List<Song>,
-    onSongClick: (Song) -> Unit,
+    onSongClick: (List<Song>, Int) -> Unit,
     contentPadding: PaddingValues,
     menu: (@Composable (Song) -> Unit)? = null,
 ) {
@@ -5463,7 +5465,14 @@ private fun DesktopDownloadsPage(
 @Composable
 private fun DesktopLocalMusicPage(
     songs: List<Song>,
-    onSongClick: (Song) -> Unit,
+    /**
+     * Plays a row *and the list it sits in*, so the queue holds what is on
+     * screen rather than the one track that was tapped. Repeat and shuffle have
+     * nothing to work with otherwise, and the track after this one is whatever
+     * the listener happened to have queued by hand - which, on a page of their
+     * own music, is nothing.
+     */
+    onSongClick: (List<Song>, Int) -> Unit,
     contentPadding: PaddingValues,
     emptyIcon: androidx.compose.ui.graphics.vector.ImageVector = BitChordIcons.MusicNote,
     emptyTitle: String = DesktopStrings["d_no_music_on_this_computer", "No music on this computer"],
@@ -5597,9 +5606,15 @@ private fun List<Song>.inReleaseOrder(): List<Song> {
 private fun DesktopLibrarySongContent(
     songs: List<Song>,
     view: DesktopLibraryView,
-    onSongClick: (Song) -> Unit,
+    onSongClick: (List<Song>, Int) -> Unit,
     menu: (@Composable (Song) -> Unit)? = null,
 ) {
+    // Where a row sits, by identity rather than by position in the loop: the grid
+    // and the list each walk their own scope, and a listener's queue should hold
+    // this list in this order whichever of the two they were looking at.
+    val play: (Song) -> Unit = { song ->
+        onSongClick(songs, songs.indexOfFirst { it.videoId == song.videoId }.coerceAtLeast(0))
+    }
     if (songs.isEmpty()) {
         DesktopEmptyPage(BitChordIcons.Search, "No matching music", "Try a different search.")
     } else if (view == DesktopLibraryView.GRID) {
@@ -5611,7 +5626,7 @@ private fun DesktopLibrarySongContent(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             gridItems(songs, key = Song::videoId) { song ->
-                Column(Modifier.fillMaxWidth().clickable { onSongClick(song) }) {
+                Column(Modifier.fillMaxWidth().clickable { play(song) }) {
                     DesktopArtwork(song.thumbnailUrl, Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(12.dp)))
                     Spacer(Modifier.height(7.dp))
                     Text(song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
@@ -5631,7 +5646,7 @@ private fun DesktopLibrarySongContent(
                     song,
                     isCurrent = isCurrentRow(song),
                     liked = false,
-                    onClick = onSongClick,
+                    onClick = play,
                     onToggleLike = null,
                     downloaded = song.localPath != null,
                     menu = menu,
