@@ -278,13 +278,23 @@ class DesktopPersistence {
         )
     }
 
-    private fun decodePlaylist(value: String): DesktopPlaylist? {
+    /**
+     * Internal rather than private so [DesktopFolderPlaylistTest] can round-trip a line without
+     * writing to the real preferences behind [playlists] and [savePlaylists].
+     */
+    internal fun encodePlaylist(playlist: DesktopPlaylist): String = playlist.toPreferenceLine()
+
+    internal fun decodePlaylist(value: String): DesktopPlaylist? {
         val fields = value.split(PLAYLIST_DELIMITER)
         if (fields.size < 3) return null
         val id = decode(fields[0]).ifBlank { return null }
         val title = decode(fields[1]).ifBlank { return null }
         val songs = fields[2].split(SONG_DELIMITER).filter(String::isNotBlank).mapNotNull(::decodeSong)
-        return DesktopPlaylist(id, title, songs)
+        // A fourth field, written only for a playlist that watches a folder. Read
+        // as absent when there is none, so the lines already on disk - every one
+        // of them three fields - decode exactly as they always did.
+        val folderPath = fields.getOrNull(3)?.let(::decode)?.takeIf(String::isNotBlank)
+        return DesktopPlaylist(id, title, songs, folderPath)
     }
 
     private fun encode(value: String): String =
@@ -318,6 +328,17 @@ data class DesktopPlaylist(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
     val songs: List<Song> = emptyList(),
+    /**
+     * The folder this playlist watches, or null for one built from tracks.
+     *
+     * Set when a folder is dropped on the window. The songs are that folder as it
+     * was when it was dropped, and they are read again every time the playlist is
+     * opened - so a file added to the folder is in the next time and a file taken
+     * out of it is gone, with nothing to be told. Holding the path rather than
+     * the listing is what makes it a playlist that follows the folder instead of
+     * a copy of one afternoon in it.
+     */
+    val folderPath: String? = null,
 )
 
 private fun DesktopPlaylist.toPreferenceLine(): String = listOf(
@@ -346,5 +367,11 @@ private fun DesktopPlaylist.toPreferenceLine(): String = listOf(
         ).joinToString("|", transform = { field ->
             Base64.getUrlEncoder().withoutPadding().encodeToString(field.toByteArray(StandardCharsets.UTF_8))
         })
+    },
+    // Last, and empty for a playlist with no folder: [decodePlaylist] reads it as
+    // absent, which is what every line already on disk is.
+    folderPath.orEmpty().let { path ->
+        if (path.isEmpty()) "" else Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(path.toByteArray(StandardCharsets.UTF_8))
     },
 ).joinToString("#")

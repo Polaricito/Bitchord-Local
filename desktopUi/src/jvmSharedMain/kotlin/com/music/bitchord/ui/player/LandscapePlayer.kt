@@ -634,7 +634,8 @@ internal fun LandscapeLyricsPane(
      * which draws nothing for it.
      */
     status: String?,
-    onStatusClick: () -> Unit,
+    /** Null where the caption is not a link - see [onSelectLyricsProvider]. */
+    onStatusClick: (() -> Unit)?,
     /** Whether lines are being picked, which is what the bar stands in for. */
     picking: Boolean = false,
     /** The pick bar itself, drawn in place of the row below. */

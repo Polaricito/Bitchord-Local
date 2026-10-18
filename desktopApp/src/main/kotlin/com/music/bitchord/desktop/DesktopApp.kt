@@ -310,6 +310,8 @@ import dev.chrisbanes.haze.HazeTint
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.HazeMaterials
+import java.nio.file.Files
+import java.nio.file.Paths
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -523,6 +525,26 @@ private enum class DesktopRepeatMode {
     }
 }
 
+/**
+ * What a playlist that watches a folder says instead of only counting songs: the
+ * count is true either way, and what a listener needs to know about this one is
+ * that it will not be that count tomorrow.
+ */
+private const val FOLDER_PLAYLIST_MARKER = "follows the folder"
+
+/** How long the line about a dropped folder stays up. */
+private const val FOLDER_DROP_NOTICE_MS = 6_000L
+
+/** The page a playlist of this computer's own tracks opens as. */
+private fun DesktopPlaylist.asCollection(): DesktopCollection = DesktopCollection(
+    browseId = id,
+    title = title,
+    subtitle = "Playlist • ${songs.size} songs" + if (folderPath != null) " • $FOLDER_PLAYLIST_MARKER" else "",
+    thumbnailUrl = songs.firstOrNull()?.thumbnailUrl,
+    type = BrowseType.PLAYLIST,
+    songs = songs,
+)
+
 @Composable
 fun BitChordDesktopApp() {
     val scope = rememberCoroutineScope()
@@ -632,6 +654,14 @@ fun BitChordDesktopApp() {
     val downloadQueue by DesktopDownloadQueue.active.collectAsState()
     val downloadInProgress = downloadQueue.keys
     var playlists by remember { mutableStateOf(persistence.playlists()) }
+    /**
+     * What a folder dropped on the window became, said once and then taken back.
+     *
+     * Its own state rather than a toast because there is no toast here, and its
+     * own line rather than the status one because this is about what was just
+     * done to the library rather than about the track.
+     */
+    var folderDropNotice by remember { mutableStateOf<String?>(null) }
     var statsRevision by remember { mutableStateOf(0L) }
     var replayPeriod by remember { mutableStateOf(DesktopReplayPeriod.ALL_TIME) }
     val replayHolder = remember { DesktopAccounts.active()?.name.orEmpty() }
@@ -703,7 +733,15 @@ fun BitChordDesktopApp() {
     var outputPrecision by remember { mutableStateOf(persistence.string("output_precision", "PCM_16")) }
     // The blob backdrop the mesh replaced, kept as an opt-out.
     var legacyMeshGradient by remember { mutableStateOf(persistence.boolean("legacy_mesh_gradient", false)) }
-    var animatedCanvas by remember { mutableStateOf(persistence.boolean("animated_canvas", true)) }
+    // Motion artwork is a video loop fetched by track id from a streaming
+    // catalogue, so a local file - which has no id in any of them - can never
+    // find one. Off in a local build rather than off by the listener's choice,
+    // because the request is made from an effect that runs on every track
+    // change and every one of them is a call out to a service that has nothing
+    // to answer with. The settings row is gone for the same reason.
+    var animatedCanvas by remember {
+        mutableStateOf(!DesktopVariant.isLocal && persistence.boolean("animated_canvas", true))
+    }
     var spotifyCanvasCookie by remember { mutableStateOf(DesktopSpotifyToken.cookie()) }
     // Held here rather than by the Integrations page, so leaving the page does not close the
     // sign-in window.
@@ -1424,16 +1462,15 @@ fun BitChordDesktopApp() {
                 if (head.isEmpty()) {
                     liveQueue = liveQueue.copy(index = 0)
                 } else {
-                    // Shuffled again, the way the first play was: shuffle is a
-                    // statement about the order, not about one run of it, and a
-                    // repeat that dropped it back into the album's own order was
-                    // shuffle off for the one moment the listener would notice.
-                    liveQueue = if (shuffle) {
-                        DesktopQueue.shuffledStartingAt(head, 0)
-                    } else {
-                        DesktopQueue(head, index = 0)
-                    }
-                    preShuffleOrder = emptyList()
+                    preShuffleOrder = if (shuffle) head.map(DesktopQueue::orderKey) else emptyList()
+                    // Shuffled all of it, including whatever leads. The first
+                    // play pins the track the listener tapped to the front, which
+                    // is right - that is the one they asked for. A repeat has no
+                    // such track: pinning head[0] made every pass open on the same
+                    // song, which is what shuffle is supposed to stop being about
+                    // after the first tap.
+                    liveQueue = if (shuffle) DesktopQueue(head.shuffled(), index = 0)
+                    else DesktopQueue(head, index = 0)
                 }
                 playCurrent()
             }
@@ -1536,17 +1573,96 @@ fun BitChordDesktopApp() {
         }
     }
 
-    fun openPlaylist(playlist: DesktopPlaylist) {
-        showCollection(
-            DesktopCollection(
-                browseId = playlist.id,
-                title = playlist.title,
-                subtitle = "Playlist • ${playlist.songs.size} songs",
-                thumbnailUrl = playlist.songs.firstOrNull()?.thumbnailUrl,
-                type = BrowseType.PLAYLIST,
-                songs = playlist.songs,
-            ),
+    /**
+     * A playlist that watches a folder, read again, and written back if it moved.
+     *
+     * Null where the playlist is not one of those - or where the folder is gone,
+     * which is not an error to raise: a folder on a drive that is not plugged in
+     * is a playlist that cannot be read for now, and the stored listing is left
+     * alone so that plugging it back in restores it rather than having emptied
+     * it for good.
+     */
+    suspend fun refreshFolderPlaylist(playlist: DesktopPlaylist): DesktopPlaylist? {
+        val folder = playlist.folderPath?.let { runCatching { Paths.get(it) }.getOrNull() } ?: return null
+        if (!Files.isDirectory(folder)) {
+            DesktopTrackLog.log("playlists: '${folder.fileName}' is not there; '${playlist.title}' left as it was")
+            return null
+        }
+        val songs = withContext(Dispatchers.IO) { DesktopLocalMusic.scanFolder(folder) }
+        if (songs == playlist.songs) return playlist
+        val updated = playlist.copy(songs = songs)
+        playlists = playlists.map { if (it.id == updated.id) updated else it }
+        persistence.savePlaylists(playlists)
+        DesktopTrackLog.log(
+            "playlists: '${playlist.title}' now holds ${songs.size} track(s) from '${folder.fileName}'",
         )
+        return updated
+    }
+
+    /**
+     * Dropping a folder that already has a playlist syncs that one instead of
+     * making a second row for the same folder: two rows for one folder is one too
+     * many, and the listener would have to guess which of them was current.
+     */
+    suspend fun addFolderPlaylist(paths: List<String>): String? {
+        if (paths.isEmpty()) return null
+        val folder = paths.mapNotNull { runCatching { Paths.get(it) }.getOrNull() }
+            .firstOrNull { Files.isDirectory(it) }
+            ?: return "That is not a folder. Drop a folder and the music inside it comes with it."
+        val absolute = folder.toAbsolutePath().normalize().toString()
+        playlists.firstOrNull { it.folderPath == absolute }?.let { existing ->
+            val refreshed = refreshFolderPlaylist(existing)
+                ?: return "'${existing.title}' is not there right now."
+            return "Synced '${refreshed.title}' - ${refreshed.songs.size} songs"
+        }
+        val songs = withContext(Dispatchers.IO) { DesktopLocalMusic.scanFolder(folder) }
+        val made = DesktopPlaylist(
+            title = folder.fileName?.toString() ?: absolute,
+            songs = songs,
+            folderPath = absolute,
+        )
+        playlists = playlists + made
+        persistence.savePlaylists(playlists)
+        DesktopTrackLog.log("playlists: '${folder.fileName}' dropped; '${made.title}' holds ${songs.size} track(s)")
+        return if (songs.isEmpty()) {
+            "'${made.title}' has no audio in it."
+        } else {
+            "'${made.title}' - ${songs.size} songs, and it will follow the folder"
+        }
+    }
+
+    /**
+     * A folder dropped on the window becomes a playlist of its own, and
+     * [folderDropNotice] says what came of it.
+     *
+     * Off the frame, because reading a folder is a directory walk and reading
+     * the tags of everything in it, and a drop is a gesture that expects the
+     * window to carry on being a window while it happens.
+     */
+    fun dropFolders(paths: List<String>) {
+        scope.launch {
+            folderDropNotice = addFolderPlaylist(paths)
+            delay(FOLDER_DROP_NOTICE_MS)
+            folderDropNotice = null
+        }
+    }
+
+    fun openPlaylist(playlist: DesktopPlaylist) {
+        showCollection(playlist.asCollection())
+        if (playlist.folderPath == null) return
+        // A playlist that watches a folder is read again on the way in: this is
+        // the sync, and it happens because the playlist is looked at rather than
+        // on a timer or because anything was dragged on to it.
+        //
+        // The page opens on the stored listing and is put back when the read
+        // lands, rather than the window waiting on a directory walk before it
+        // shows anything at all. The replacement overwrites the open page in
+        // place, so it does not go into the page history a second time.
+        scope.launch {
+            val refreshed = refreshFolderPlaylist(playlist) ?: return@launch
+            if (openedCollection?.browseId != refreshed.id) return@launch
+            openedCollection = refreshed.asCollection()
+        }
     }
 
     /**
@@ -3174,7 +3290,11 @@ fun BitChordDesktopApp() {
                         transparentBase = transparentBase,
                     )
                 },
-                modifier = Modifier.onPreviewKeyEvent { event ->
+                // Over the whole window, so a folder let go of anywhere in the app
+                // becomes a playlist - see [dropFolderPlaylist].
+                modifier = Modifier
+                    .dropFolderPlaylist(onFolders = ::dropFolders)
+                    .onPreviewKeyEvent { event ->
                     if (event.type != KeyEventType.KeyUp) return@onPreviewKeyEvent false
                     when {
                         event.key == Key.MediaPlayPause -> {
@@ -3354,6 +3474,28 @@ fun BitChordDesktopApp() {
                     }
                 },
                 overlay = {
+                    // What a dropped folder became, said once. Over the frame
+                    // rather than on the page it lands on, because the page may
+                    // be anywhere and the listener is looking at where they
+                    // dropped, not at where the app decided to put it.
+                    folderDropNotice?.let { notice ->
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                            Surface(
+                                modifier = Modifier
+                                    .padding(bottom = 96.dp)
+                                    .padding(horizontal = 24.dp),
+                                shape = RoundedCornerShape(percent = 50),
+                                color = DesktopAccent.copy(alpha = 0.92f),
+                            ) {
+                                Text(
+                                    notice,
+                                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Color.White,
+                                )
+                            }
+                        }
+                    }
                     DesktopPlayerSheet(
                         visible = overlays.nowPlaying && selectedSong != null,
                         onDismiss = {
@@ -3843,9 +3985,13 @@ fun BitChordDesktopApp() {
                                     animatedCanvas = animatedCanvas,
                                     showNerdStats = showNerdStats,
                                     fullBleedArtwork = fullBleedArtwork,
-                                    onAnimatedCanvasChange = {
-                                        animatedCanvas = it
-                                        persistence.saveBoolean("animated_canvas", it)
+                                    onAnimatedCanvasChange = { enabled ->
+                                        // Nowhere in a local build to turn it on
+                                        // to: see the declaration of [animatedCanvas].
+                                        if (!DesktopVariant.isLocal || !enabled) {
+                                            animatedCanvas = enabled
+                                            persistence.saveBoolean("animated_canvas", enabled)
+                                        }
                                     },
                                     spotifyCanvasReady = spotifyCanvasCookie.isNotBlank(),
                                     onOpenSpotifyCanvasSetup = { overlays.settingsPage = DesktopSettingsPage.SPOTIFY_CANVAS },
@@ -6453,22 +6599,29 @@ private fun DesktopSettingsScreen(
                         legacyMeshGradient,
                         onLegacyMeshGradientChange,
                     )
-                    SettingsToggle(
-                        DesktopStrings["d_animated_canvas", "Animated canvas"],
-                        DesktopStrings["d_show_motion_artwork_when_it_is_available", "Show motion artwork when it is available"],
-                        animatedCanvas,
-                        onAnimatedCanvasChange,
-                    )
-                    if (animatedCanvas) {
-                        SettingsNavigationRow(
-                            title = DesktopStrings["spotify_canvas_setup", "Spotify Canvas setup"],
-                            subtitle = if (spotifyCanvasReady) {
-                                "Connected"
-                            } else {
-                                "To use Spotify Canvas, provide your Spotify sp_dc cookie."
-                            },
-                            onClick = onOpenSpotifyCanvasSetup,
+                    // Motion artwork is a loop of video fetched by track id from a
+                    // streaming catalogue. A local file has no id in any of them,
+                    // so nothing is ever found and the whole group is a switch
+                    // that cannot turn anything on. Gone in a local build rather
+                    // than left off: see DesktopVariant.
+                    if (!DesktopVariant.isLocal) {
+                        SettingsToggle(
+                            DesktopStrings["d_animated_canvas", "Animated canvas"],
+                            DesktopStrings["d_show_motion_artwork_when_it_is_available", "Show motion artwork when it is available"],
+                            animatedCanvas,
+                            onAnimatedCanvasChange,
                         )
+                        if (animatedCanvas) {
+                            SettingsNavigationRow(
+                                title = DesktopStrings["spotify_canvas_setup", "Spotify Canvas setup"],
+                                subtitle = if (spotifyCanvasReady) {
+                                    "Connected"
+                                } else {
+                                    "To use Spotify Canvas, provide your Spotify sp_dc cookie."
+                                },
+                                onClick = onOpenSpotifyCanvasSetup,
+                            )
+                        }
                     }
                 }
             }

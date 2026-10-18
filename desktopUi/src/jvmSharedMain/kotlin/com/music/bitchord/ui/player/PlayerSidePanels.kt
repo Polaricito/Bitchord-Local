@@ -29,7 +29,7 @@ import org.jetbrains.compose.resources.stringResource
 
 /**
  * The lyric sheet with its provider line and its romanization and translation
- * toggles — the landscape player's lyrics pane, without the player around it.
+ * toggles â€” the landscape player's lyrics pane, without the player around it.
  *
  * [position] is read only by the panel itself, for the same reason the player
  * passes it down as an object: a tick recomposes the lines, not this.
@@ -79,10 +79,10 @@ fun LyricsSidePanel(
                     lyricsLoadingText
                 },
                 status = lyricsTranslation.status,
-                // Keeps its "Lyrics by …" line: this column is shown with the
+                // Keeps its "Lyrics by â€¦" line: this column is shown with the
                 // player closed, so the player's song menu is not there to switch
                 // provider from, and the line is the only way to.
-                onStatusClick = { showLyricsProviders = true },
+                onStatusClick = onSelectLyricsProvider?.let { { showLyricsProviders = true } },
                 romanizationToggle = {
                     RomanizationToggleButton(
                         state = lyricsTranslation.romanizationState,
@@ -137,7 +137,7 @@ fun LyricsSidePanel(
     }
 }
 
-/** The live queue — the player's own, rows, drag and all — without the player. */
+/** The live queue â€” the player's own, rows, drag and all â€” without the player. */
 @Composable
 fun QueueSidePanel(
     queue: List<Song>,

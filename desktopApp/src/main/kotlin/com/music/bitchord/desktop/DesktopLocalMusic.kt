@@ -24,6 +24,30 @@ object DesktopLocalMusic {
     }
 
     /**
+     * One folder as a playlist of its own: what [root] holds, and what it holds
+     * again after a file has been added or taken away.
+     *
+     * Only what is inside - the folder is the whole boundary, which is the whole
+     * point of dropping one rather than picking tracks - and only audio, by the
+     * same extension and the same "is this music" test the library scan uses, so
+     * a folder playlist and Home never disagree about what a file is.
+     *
+     * In album order where the files say so: a dropped album should play the way
+     * it is meant to be heard, and only fall back to the name when the tags say
+     * nothing. Recursive to the library's own depth, so dropping an artist folder
+     * with albums inside it brings the albums rather than the loose tracks alone.
+     */
+    fun scanFolder(root: Path): List<Song> {
+        if (!Files.isDirectory(root)) return emptyList()
+        val filterNonMusic = DesktopPersistence().boolean(KEY_FILTER_NON_MUSIC_AUDIO, false)
+        return scanDirectory(root, filterNonMusic)
+            .distinctBy(Song::localPath)
+            .sortedWith(
+                compareBy({ it.trackNumber ?: Int.MAX_VALUE }, { it.title.lowercase() }),
+            )
+    }
+
+    /**
      * Where to look: the chosen folder, or the usual two when none has been chosen.
      *
      * Android's equivalent is a document tree the listener grants, with "all audio folders" as the
