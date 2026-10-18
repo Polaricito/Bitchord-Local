@@ -575,7 +575,8 @@ internal fun PlayerActionRow(
     onCycleRepeat: () -> Unit,
     onToggleAutoplay: () -> Unit,
     onOpenOutput: () -> Unit,
-    onListenTogether: () -> Unit,
+    /** Null where there is no party to be in — see [OutputPartyPill]. */
+    onListenTogether: (() -> Unit)?,
     /** Opens [ListenTogetherMembersSheet] rather than settings directly. */
     onOpenListenTogetherMembers: () -> Unit,
     /**
@@ -954,7 +955,12 @@ private fun PillDivider() {
 @Composable
 private fun OutputPartyPill(
     onOutput: () -> Unit,
-    onParty: () -> Unit,
+    /**
+     * Null where there is no party to be in. The two halves share one capsule so
+     * they read as a single control with two ends; with no party there is one
+     * thing to press, and a lone output button is still a button rather than a gap.
+     */
+    onParty: (() -> Unit)?,
     /** Who's in it, before the settings page — see [ListenTogetherMembersSheet]. */
     onOpenMembers: () -> Unit,
 ) {
@@ -966,28 +972,31 @@ private fun OutputPartyPill(
             contentDescription = stringResource(Res.string.audio_output),
             onClick = onOutput,
         )
-        PillDivider()
-        PillSegment(
-            // Person rather than Groups: the three-person glyph is drawn half
-            // the height of Headphones and wider than the segment holding it,
-            // so the two halves of the capsule never looked like a pair.
-            icon = Icons.Rounded.Person,
-            iconSize = PILL_PARTY_SIZE,
-            // The count is here and nowhere else: spoken, it is the whole
-            // point of the control; drawn, it would cost the capsule its
-            // symmetry for something the caption below already implies.
-            contentDescription = if (badge.inParty) {
-                stringResource(Res.string.listen_together_open_count, badge.members)
-            } else {
-                stringResource(Res.string.listen_together_open)
-            },
-            // Already in a party, this opens who's in it rather than the
-            // settings page directly; there is nothing to create or join once
-            // there is a party, so [onParty] only ever fires beforehand.
-            onClick = if (badge.inParty) onOpenMembers else onParty,
-            highlighted = badge.inParty,
-            trailingLabel = badge.members.takeIf { badge.inParty }?.toString(),
-        )
+        val party = onParty
+        if (party != null) {
+            PillDivider()
+            PillSegment(
+                // Person rather than Groups: the three-person glyph is drawn half
+                // the height of Headphones and wider than the segment holding it,
+                // so the two halves of the capsule never looked like a pair.
+                icon = Icons.Rounded.Person,
+                iconSize = PILL_PARTY_SIZE,
+                // The count is here and nowhere else: spoken, it is the whole
+                // point of the control; drawn, it would cost the capsule its
+                // symmetry for something the caption below already implies.
+                contentDescription = if (badge.inParty) {
+                    stringResource(Res.string.listen_together_open_count, badge.members)
+                } else {
+                    stringResource(Res.string.listen_together_open)
+                },
+                // Already in a party, this opens who's in it rather than the
+                // settings page directly; there is nothing to create or join once
+                // there is a party, so [party] only ever fires beforehand.
+                onClick = if (badge.inParty) onOpenMembers else party,
+                highlighted = badge.inParty,
+                trailingLabel = badge.members.takeIf { badge.inParty }?.toString(),
+            )
+        }
     }
 }
 

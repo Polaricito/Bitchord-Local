@@ -728,7 +728,12 @@ fun NowPlayingScreen(
      * the settings page it opens is drawn under the player sheet, and closing
      * the sheet is the caller's business.
      */
-    onListenTogether: () -> Unit,
+    /**
+     * Opens the party. Null in a build that has none — see [DesktopVariant] on the
+     * desktop, which hides the whole feature rather than leaving a control that
+     * opens something which can never synchronise.
+     */
+    onListenTogether: (() -> Unit)?,
     lyrics: List<LyricLine>?,
     lyricsSource: LyricsSource?,
     lyricsProviderStates: Map<LyricsSource, LyricsProviderState>,
@@ -1490,11 +1495,13 @@ fun NowPlayingScreen(
 
     // Where the caption above the credits leads: the party for a track someone
     // else queued, the queue itself for a queue-built session, and otherwise
-    // back to the album or playlist the session was started from.
+    // back to the album or playlist the session was started from. With no party
+    // to lead to, a track someone else queued falls through to the queue.
     val openPlaybackOrigin: () -> Unit = {
-        if (playedBy != null) {
-            onListenTogether()
-        } else if (song.playbackSourceType == PlaybackSourceType.QUEUE) {
+        val party = onListenTogether
+        if (playedBy != null && party != null) {
+            party()
+        } else if (song.playbackSourceType == PlaybackSourceType.QUEUE || playedBy != null) {
             queueOpen = true
             closeLyrics()
         } else {
@@ -1622,13 +1629,13 @@ fun NowPlayingScreen(
                 onDismiss = { showCast = false },
             )
         }
-        if (showListenTogetherMembers) {
+        if (showListenTogetherMembers && onListenTogether != null) {
             ListenTogetherMembersSheet(
                 hazeState = playerHaze,
                 onDismiss = { showListenTogetherMembers = false },
                 onManage = {
                     showListenTogetherMembers = false
-                    onListenTogether()
+                    onListenTogether?.invoke()
                 },
             )
         }
@@ -1666,7 +1673,9 @@ fun NowPlayingScreen(
                     // player, and the host holds this flag, so a drawer left up
                     // would greet the next opening of the player.
                     onOpenOutput = { playerOverflow.value = false; openAudioOutput() },
-                    onListenTogether = { playerOverflow.value = false; onListenTogether() },
+                    onListenTogether = onListenTogether?.let { open ->
+                        { playerOverflow.value = false; open() }
+                    },
                     onOpenListenTogetherMembers = {
                         playerOverflow.value = false
                         openListenTogetherMembers()

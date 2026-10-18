@@ -3034,6 +3034,9 @@ fun BitChordDesktopApp() {
     ) {
         val currentLabel = lyrics?.source
         val asked = lyricsOnly?.let { listOf(it) } ?: DesktopLyricsClient.enabledSources(lyricsOrder, lyricsOn)
+        // Every row in this list is a server. A local build has none, so it has
+        // nothing to choose between and the drawer is left out rather than empty.
+        if (DesktopVariant.isLocal) return@remember emptyList()
         lyricsOrder.map { label ->
             val source = lyricsSourceNamed(label)
             val state = when {
@@ -3393,10 +3396,11 @@ fun BitChordDesktopApp() {
                                     openAlbum(id)
                                 }
                             },
+                            // No party in a local build: see DesktopSettingsSection.isLocalBuildRelevant.
                             onListenTogether = {
                                 overlays.nowPlaying = false
                                 overlays.listenTogether = true
-                            },
+                            }.takeIf { !DesktopVariant.isLocal },
                             lyrics = sharedLyrics,
                             lyricsSource = sharedLyricsSource,
                             lyricsProviderStates = providerStates,
@@ -3473,12 +3477,17 @@ fun BitChordDesktopApp() {
                                     onTranslate = {
                                         playerMenuOpen = false
                                         playerTranslateToggle.value = true
-                                    },
+                                    }.takeIf { !DesktopVariant.isLocal },
                                     showingTranslation = playerShowingTranslation.value,
                                     translateEnabled = !sharedLyrics.isNullOrEmpty(),
                                     lyricsProviders = menuLyricsProviders,
-                                    onSelectLyricsProvider = { label -> lyricsOnly = label },
-                                    onSearchLyrics = { title, artist -> searchLyrics(title, artist) },
+                                    // The parameter types are spelled out because `takeIf` hides the expected type
+                                    // from the compiler, and a lambda's own is the only thing left to
+                                    // infer them from.
+                                    onSelectLyricsProvider = { label: String -> lyricsOnly = label }
+                                        .takeIf { !DesktopVariant.isLocal },
+                                    onSearchLyrics = { title: String, artist: String -> searchLyrics(title, artist) }
+                                        .takeIf { !DesktopVariant.isLocal },
                                     lyricsOffsetMs = lyricsOffsetMs,
                                     onSetLyricsOffset = { DesktopPlayerSettings.setLyricsOffsetMs(it) },
                                     onDismiss = { playerMenuOpen = false },
@@ -3808,7 +3817,8 @@ fun BitChordDesktopApp() {
                                     enabledLyricsSources = DesktopLyricsClient.enabledSources(lyricsOrder, lyricsOn),
                                     onOpenLyricsSources = { overlays.settingsPage = DesktopSettingsPage.LYRICS_SOURCES }
                                     .takeIf { !DesktopVariant.isLocal },
-                                    onOpenTranslationLanguage = { overlays.settingsPage = DesktopSettingsPage.TRANSLATION_LANGUAGE },
+                                    onOpenTranslationLanguage = { overlays.settingsPage = DesktopSettingsPage.TRANSLATION_LANGUAGE }
+                                    .takeIf { !DesktopVariant.isLocal },
                                     onOpenEqualizer = { overlays.settingsPage = DesktopSettingsPage.EQUALIZER },
                                     onOpenAudioOutput = { overlays.settingsPage = DesktopSettingsPage.AUDIO_OUTPUT },
                                     onOpenListenTogether = { overlays.settingsPage = DesktopSettingsPage.LISTEN_TOGETHER },
@@ -5794,6 +5804,12 @@ private enum class DesktopSettingsSection {
         get() = when (this) {
             // An account, and the sources it would stream from and play them with.
             ACCOUNT, SOURCES -> false
+            // A party agrees on what is playing by its video id, and a local file's
+            // is `local:<absolute path>` - true only on this machine, and skipped by
+            // the sync itself, which returns early for anything played from disk.
+            // In a build where every track is a local file there is nothing left to
+            // agree on, so the group is a feature that cannot work.
+            LISTEN_TOGETHER -> false
             else -> true
         }
 }
@@ -5848,7 +5864,7 @@ private fun DesktopSettingsScreen(
      * out of the file and has no provider to pick.
      */
     onOpenLyricsSources: (() -> Unit)?,
-    onOpenTranslationLanguage: () -> Unit,
+    onOpenTranslationLanguage: (() -> Unit)?,
     onOpenEqualizer: () -> Unit,
     /** Opens the output-device picker. */
     onOpenAudioOutput: () -> Unit,
@@ -6141,12 +6157,18 @@ private fun DesktopSettingsScreen(
                                 onClick = null,
                             )
                         }
+                        // Translation is Google Translate over HTTP - see LyricsTranslation's ENDPOINT -
+                        // so it is a row that has nothing behind it where the words come from
+                        // a file on disk. Hidden rather than disabled, because a picker whose
+                        // only outcome would be a network call is a promise the build cannot keep.
                         val translationLanguage by DesktopTranslationSetting.language.collectAsState()
-                        SettingsNavigationRow(
-                            title = DesktopStrings["translation_language", "Translation language"],
-                            subtitle = DesktopTranslationSetting.describe(translationLanguage),
-                            onClick = onOpenTranslationLanguage,
-                        )
+                        if (onOpenTranslationLanguage != null) {
+                            SettingsNavigationRow(
+                                title = DesktopStrings["translation_language", "Translation language"],
+                                subtitle = DesktopTranslationSetting.describe(translationLanguage),
+                                onClick = onOpenTranslationLanguage,
+                            )
+                        }
                     }
                 }
             }
