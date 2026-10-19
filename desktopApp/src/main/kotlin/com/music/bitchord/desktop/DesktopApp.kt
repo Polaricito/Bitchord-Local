@@ -535,6 +535,15 @@ private const val FOLDER_PLAYLIST_MARKER = "follows the folder"
 /** How long the line about a dropped folder stays up. */
 private const val FOLDER_DROP_NOTICE_MS = 6_000L
 
+/**
+ * What a dropped folder came to: the line to say, and the playlist to open.
+ *
+ * The playlist is null where nothing was made or found - a drop that was not a
+ * folder, or one whose folder has gone - so the caller cannot open a page that
+ * does not exist just because it has something to say about it.
+ */
+private data class FolderDrop(val notice: String, val playlist: DesktopPlaylist?)
+
 /** The page a playlist of this computer's own tracks opens as. */
 private fun DesktopPlaylist.asCollection(): DesktopCollection = DesktopCollection(
     browseId = id,
@@ -1599,54 +1608,6 @@ fun BitChordDesktopApp() {
         return updated
     }
 
-    /**
-     * Dropping a folder that already has a playlist syncs that one instead of
-     * making a second row for the same folder: two rows for one folder is one too
-     * many, and the listener would have to guess which of them was current.
-     */
-    suspend fun addFolderPlaylist(paths: List<String>): String? {
-        if (paths.isEmpty()) return null
-        val folder = paths.mapNotNull { runCatching { Paths.get(it) }.getOrNull() }
-            .firstOrNull { Files.isDirectory(it) }
-            ?: return "That is not a folder. Drop a folder and the music inside it comes with it."
-        val absolute = folder.toAbsolutePath().normalize().toString()
-        playlists.firstOrNull { it.folderPath == absolute }?.let { existing ->
-            val refreshed = refreshFolderPlaylist(existing)
-                ?: return "'${existing.title}' is not there right now."
-            return "Synced '${refreshed.title}' - ${refreshed.songs.size} songs"
-        }
-        val songs = withContext(Dispatchers.IO) { DesktopLocalMusic.scanFolder(folder) }
-        val made = DesktopPlaylist(
-            title = folder.fileName?.toString() ?: absolute,
-            songs = songs,
-            folderPath = absolute,
-        )
-        playlists = playlists + made
-        persistence.savePlaylists(playlists)
-        DesktopTrackLog.log("playlists: '${folder.fileName}' dropped; '${made.title}' holds ${songs.size} track(s)")
-        return if (songs.isEmpty()) {
-            "'${made.title}' has no audio in it."
-        } else {
-            "'${made.title}' - ${songs.size} songs, and it will follow the folder"
-        }
-    }
-
-    /**
-     * A folder dropped on the window becomes a playlist of its own, and
-     * [folderDropNotice] says what came of it.
-     *
-     * Off the frame, because reading a folder is a directory walk and reading
-     * the tags of everything in it, and a drop is a gesture that expects the
-     * window to carry on being a window while it happens.
-     */
-    fun dropFolders(paths: List<String>) {
-        scope.launch {
-            folderDropNotice = addFolderPlaylist(paths)
-            delay(FOLDER_DROP_NOTICE_MS)
-            folderDropNotice = null
-        }
-    }
-
     fun openPlaylist(playlist: DesktopPlaylist) {
         showCollection(playlist.asCollection())
         if (playlist.folderPath == null) return
@@ -1663,6 +1624,86 @@ fun BitChordDesktopApp() {
             if (openedCollection?.browseId != refreshed.id) return@launch
             openedCollection = refreshed.asCollection()
         }
+    }
+
+    /**
+     * Dropping a folder that already has a playlist syncs that one instead of
+     * making a second row for the same folder: two rows for one folder is one too
+     * many, and the listener would have to guess which of them was current.
+     */
+    suspend fun addFolderPlaylist(paths: List<String>): FolderDrop? {
+        if (paths.isEmpty()) return null
+        val folder = paths.mapNotNull { runCatching { Paths.get(it) }.getOrNull() }
+            .firstOrNull { Files.isDirectory(it) }
+            ?: return FolderDrop(
+                "That is not a folder. Drop a folder and the music inside it comes with it.",
+                null,
+            )
+        val absolute = folder.toAbsolutePath().normalize().toString()
+        playlists.firstOrNull { it.folderPath == absolute }?.let { existing ->
+            val refreshed = refreshFolderPlaylist(existing)
+                ?: return FolderDrop("'${existing.title}' is not there right now.", null)
+            return FolderDrop("Synced '${refreshed.title}' - ${refreshed.songs.size} songs", refreshed)
+        }
+        val songs = withContext(Dispatchers.IO) { DesktopLocalMusic.scanFolder(folder) }
+        val made = DesktopPlaylist(
+            title = folder.fileName?.toString() ?: absolute,
+            songs = songs,
+            folderPath = absolute,
+        )
+        playlists = playlists + made
+        persistence.savePlaylists(playlists)
+        DesktopTrackLog.log("playlists: '${folder.fileName}' dropped; '${made.title}' holds ${songs.size} track(s)")
+        return FolderDrop(
+            if (songs.isEmpty()) {
+                "'${made.title}' has no audio in it."
+            } else {
+                "'${made.title}' - ${songs.size} songs, and it will follow the folder"
+            },
+            made,
+        )
+    }
+
+    /**
+     * A folder dropped on the window becomes a playlist of its own, and
+     * [folderDropNotice] says what came of it.
+     *
+     * Off the frame, because reading a folder is a directory walk and reading
+     * the tags of everything in it, and a drop is a gesture that expects the
+     * window to carry on being a window while it happens.
+     *
+     * The playlist is opened, not just announced. A line at the bottom of the
+     * window says something happened; the page itself says what, and a listener
+     * who let go of a folder is asking to hear what is in it. It is also the
+     * clearest possible answer to "did that work?".
+     *
+     * The notice is cleared in a `finally` so that a read that throws - a folder
+     * on a network share that goes away mid-walk - cannot leave the last line up
+     * for ever, which reads as the window being stuck.
+     */
+    fun dropFolders(paths: List<String>) {
+        scope.launch {
+            try {
+                val drop = addFolderPlaylist(paths) ?: return@launch
+                folderDropNotice = drop.notice
+                drop.playlist?.let(::openPlaylist)
+                delay(FOLDER_DROP_NOTICE_MS)
+            } finally {
+                folderDropNotice = null
+            }
+        }
+    }
+
+    /**
+     * The same thing without a drop: the platform's own folder picker.
+     *
+     * A folder dragged out of the file manager is the pleasant way in; this is
+     * the one that always works. A drop is a gesture the file manager has to
+     * cooperate with, and a machine where it declines to is not a machine
+     * without folder playlists.
+     */
+    fun chooseFolderPlaylist() {
+        DesktopLocalMusic.chooseFolder()?.let { folder -> dropFolders(listOf(folder.toString())) }
     }
 
     /**
@@ -3182,7 +3223,13 @@ fun BitChordDesktopApp() {
 
     // What the player and the lyrics column beside the page both read, worked out once for the two.
     val sharedLyrics = lyrics?.lines
-    val sharedLyricsSource = remember(lyrics) { lyrics?.source?.let(::lyricsSourceNamed) }
+    // Null in a local build: the words came out of the file, so there is no
+    // provider to name. Naming one anyway is what put "Lyrics by In file" over
+    // the lyrics - a caption about the only place they could have come from -
+    // and made that caption a link to a drawer of services that cannot answer.
+    val sharedLyricsSource = remember(lyrics) {
+        if (DesktopVariant.isLocal) null else lyrics?.source?.let(::lyricsSourceNamed)
+    }
     val sharedLyricsUnavailable = !lyricsLoading && sharedLyrics.isNullOrEmpty()
     val providerStates = remember(lyricsOrder, lyricsOn, sharedLyricsSource, lyricsLoading) {
         DesktopLyricsClient.enabledSources(lyricsOrder, lyricsOn)
@@ -3423,6 +3470,10 @@ fun BitChordDesktopApp() {
                         onDestinationSelected = ::selectDestination,
                         onOpenAccountPlaylist = { openShelfItem(it, PLAYLISTS_SHELF) },
                         onOpenLocalPlaylist = ::openPlaylist,
+                        // Folders are a local build's only way to make a playlist,
+                        // and the row is the way to make one that does not depend on
+                        // a drag reaching the window.
+                        onAddFolderPlaylist = if (DesktopVariant.isLocal) ::chooseFolderPlaylist else null,
                         onOpenSettings = ::openSettings,
                         focusSearch = searchFocusRequested,
                         onSearchFocused = { searchFocusRequested = false },
@@ -3455,7 +3506,13 @@ fun BitChordDesktopApp() {
                                 lyrics = sharedLyrics,
                                 lyricsSource = sharedLyricsSource,
                                 lyricsProviderStates = providerStates,
-                                onSelectLyricsProvider = { source -> lyricsOnly = source.label },
+                                // The parenthesised lambda is spelled out because `takeIf` hides
+                                // the expected type from the compiler, and null is the whole point
+                                // in a local build: there are no providers to choose between, so
+                                // the caption must not be a link and the drawer must not open.
+                                onSelectLyricsProvider = ({ source: LyricsSource -> lyricsOnly = source.label })
+                                    .takeIf { !DesktopVariant.isLocal },
+                                translationAvailable = !DesktopVariant.isLocal,
                                 lyricsUnavailable = sharedLyricsUnavailable,
                                 onSeek = ::seekPlayer,
                                 modifier = Modifier.fillMaxSize(),
@@ -3611,7 +3668,13 @@ fun BitChordDesktopApp() {
                             lyrics = sharedLyrics,
                             lyricsSource = sharedLyricsSource,
                             lyricsProviderStates = providerStates,
-                            onSelectLyricsProvider = { source -> lyricsOnly = source.label },
+                            // The parenthesised lambda is spelled out because `takeIf` hides
+                            // the expected type from the compiler, and null is the whole point
+                            // in a local build: there are no providers to choose between, so
+                            // the caption must not be a link and the drawer must not open.
+                            onSelectLyricsProvider = ({ source: LyricsSource -> lyricsOnly = source.label })
+                                .takeIf { !DesktopVariant.isLocal },
+                            lyricsTranslationAvailable = !DesktopVariant.isLocal,
                             lyricsUnavailable = sharedLyricsUnavailable,
                             lyricsOffsetOpen = false,
                             onDismissLyricsOffset = {},
@@ -4765,6 +4828,11 @@ private fun DesktopSidebar(
     onDestinationSelected: (DesktopDestination) -> Unit,
     onOpenAccountPlaylist: (ShelfItem) -> Unit,
     onOpenLocalPlaylist: (DesktopPlaylist) -> Unit,
+    /**
+     * Picks a folder for a playlist without dragging one in. Null where the
+     * feature is not offered, which is the full build - see [dropFolderPlaylist].
+     */
+    onAddFolderPlaylist: (() -> Unit)?,
     onOpenSettings: () -> Unit,
     /** Search was picked: the sidebar's box is the page's field, so it takes the focus. */
     focusSearch: Boolean,
@@ -4879,6 +4947,16 @@ private fun DesktopSidebar(
                 modifier = Modifier.fillMaxWidth().weight(1f),
                 contentPadding = PaddingValues(bottom = 8.dp),
             ) {
+                if (onAddFolderPlaylist != null) {
+                    item(key = "local:add-folder") {
+                        DesktopSidebarItem(
+                            Icons.Rounded.Folder,
+                            "Add a folder",
+                            false,
+                            onClick = onAddFolderPlaylist,
+                        )
+                    }
+                }
                 items(visibleAccount, key = { "account:${it.browseId}" }) { playlist ->
                     DesktopSidebarItem(
                         Icons.AutoMirrored.Rounded.PlaylistPlay,
@@ -4902,7 +4980,15 @@ private fun DesktopSidebar(
                 if (visibleAccount.isEmpty() && visibleLocal.isEmpty()) {
                     item {
                         Text(
-                            "Your playlists will appear here",
+                            // A local build's playlists are folders, so its empty state
+                            // teaches the one gesture that makes one. Saying they will
+                            // "appear here" would be true and useless: nothing on this
+                            // screen is how they get here.
+                            if (onAddFolderPlaylist != null) {
+                                "Drop a folder on this window, or use Add a folder, and it becomes a playlist of what is inside it."
+                            } else {
+                                "Your playlists will appear here"
+                            },
                             modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
                             color = DesktopSecondary.copy(alpha = 0.68f),
                             style = MaterialTheme.typography.bodySmall,

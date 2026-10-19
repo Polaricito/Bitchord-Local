@@ -744,6 +744,8 @@ fun NowPlayingScreen(
      * behind it to open.
      */
     onSelectLyricsProvider: ((LyricsSource) -> Unit)?,
+    /** False where translating is not offered at all - see [LyricsTranslationUi]. */
+    lyricsTranslationAvailable: Boolean,
     lyricsUnavailable: Boolean,
     lyricsOffsetOpen: Boolean,
     onDismissLyricsOffset: () -> Unit,
@@ -1018,6 +1020,7 @@ fun NowPlayingScreen(
         lyricsUnavailable = lyricsUnavailable,
         loadingText = lyricsLoadingText,
         haptics = haptics,
+        translationAvailable = lyricsTranslationAvailable,
     )
     // A host that shows the translate toggle as a row on its own song menu (the
     // desktop player moved it out of the overflow) raises it by flipping a flag
@@ -1735,7 +1738,7 @@ fun NowPlayingScreen(
                         // song menu now, so it drops out of this overflow there; a
                         // host that raised our overflow (playerOverflowOpen != null)
                         // is that player. The phone path, which has no such row, keeps it.
-                        if (hasLyrics && playerOverflowOpen == null) {
+                        if (hasLyrics && playerOverflowOpen == null && lyricsTranslation.translationAvailable) {
                             TranslationToggleButton(
                                 state = lyricsTranslation.translationState,
                                 showingTranslation = lyricsTranslation.showingTranslation,
@@ -2178,12 +2181,14 @@ fun NowPlayingScreen(
                                 )
                             },
                             translationToggle = {
-                                TranslationToggleButton(
-                                    state = lyricsTranslation.translationState,
-                                    showingTranslation = lyricsTranslation.showingTranslation,
-                                    enabled = !lyrics.isNullOrEmpty(),
-                                    onClick = lyricsTranslation.toggleTranslation,
-                                )
+                                if (lyricsTranslation.translationAvailable) {
+                                    TranslationToggleButton(
+                                        state = lyricsTranslation.translationState,
+                                        showingTranslation = lyricsTranslation.showingTranslation,
+                                        enabled = !lyrics.isNullOrEmpty(),
+                                        onClick = lyricsTranslation.toggleTranslation,
+                                    )
+                                }
                             },
                         ) { panelModifier ->
                             LyricsTranslationMotion(
@@ -3581,19 +3586,21 @@ fun NowPlayingScreen(
                                         onClick = lyricsTranslation.toggleRomanization,
                                     )
                                 }
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .graphicsLayer { alpha = translateFade },
-                                ) {
-                                    TranslationToggleButton(
-                                        state = lyricsTranslation.translationState,
-                                        showingTranslation = lyricsTranslation.showingTranslation,
-                                        // Not tappable on the way out: a disc at 20%
-                                        // opacity is on its way to gone, not a target.
-                                        enabled = translateShown && !lyrics.isNullOrEmpty(),
-                                        onClick = lyricsTranslation.toggleTranslation,
-                                    )
+                                if (lyricsTranslation.translationAvailable) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .graphicsLayer { alpha = translateFade },
+                                    ) {
+                                        TranslationToggleButton(
+                                            state = lyricsTranslation.translationState,
+                                            showingTranslation = lyricsTranslation.showingTranslation,
+                                            // Not tappable on the way out: a disc at 20%
+                                            // opacity is on its way to gone, not a target.
+                                            enabled = translateShown && !lyrics.isNullOrEmpty(),
+                                            onClick = lyricsTranslation.toggleTranslation,
+                                        )
+                                    }
                                 }
                             }
                             // The bar arrives and leaves without a transition of its own:

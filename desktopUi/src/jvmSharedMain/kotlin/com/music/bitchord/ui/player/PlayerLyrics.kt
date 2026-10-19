@@ -3046,6 +3046,14 @@ internal class LyricsTranslationUi(
      * null where there is nothing to say - see [lyricsStatus].
      */
     val status: String?,
+    /**
+     * Whether translating is offered at all. False in a build whose lyrics come
+     * only from the file: translation is a request to a service, and there is no
+     * file-to-file version of it to fall back on. The toggle is then not drawn
+     * and [toggleTranslation] does nothing, so no state can arise that the status
+     * line would have to report.
+     */
+    val translationAvailable: Boolean,
     val toggleTranslation: () -> Unit,
     val toggleRomanization: () -> Unit,
 )
@@ -3064,6 +3072,8 @@ internal fun rememberLyricsTranslation(
     /** What the status line says while the lyrics are still being looked up. */
     loadingText: String,
     haptics: Haptics,
+    /** False where translation is not offered at all - see [LyricsTranslationUi]. */
+    translationAvailable: Boolean = true,
 ): LyricsTranslationUi {
     val reduceTranslationMotion by PlayerSettings.reduceAnimation.collectAsStateWithLifecycle()
     val configuredLocale = appLanguageTag()
@@ -3132,6 +3142,9 @@ internal fun rememberLyricsTranslation(
     }
     val translationScope = rememberCoroutineScope()
     val toggleTranslation: () -> Unit = toggleTranslation@{
+        // Nothing to ask for where nothing offers it. The shortcut that reaches
+        // here goes through this too, so there is one door, not two.
+        if (!translationAvailable) return@toggleTranslation
         when (val state = translationState) {
             is LyricsTranslationUiState.Ready -> {
                 lyricsDisplayMode = if (showingTranslation) {
@@ -3277,6 +3290,7 @@ internal fun rememberLyricsTranslation(
         transition = translationTransition,
         reduceMotion = reduceTranslationMotion,
         status = status,
+        translationAvailable = translationAvailable,
         toggleTranslation = toggleTranslation,
         toggleRomanization = toggleRomanization,
     )

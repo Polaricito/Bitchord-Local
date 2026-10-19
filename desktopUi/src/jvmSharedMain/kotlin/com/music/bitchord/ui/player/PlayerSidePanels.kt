@@ -42,7 +42,14 @@ fun LyricsSidePanel(
     lyrics: List<LyricLine>?,
     lyricsSource: LyricsSource?,
     lyricsProviderStates: Map<LyricsSource, LyricsProviderState>,
-    onSelectLyricsProvider: (LyricsSource) -> Unit,
+    /**
+     * Choosing which provider answered. Null where there are none to choose
+     * between - a build whose lyrics come only from the file - and then the
+     * caption is a caption rather than a link, and there is no drawer behind it.
+     */
+    onSelectLyricsProvider: ((LyricsSource) -> Unit)?,
+    /** False where translation is not offered at all - see [LyricsTranslationUi]. */
+    translationAvailable: Boolean,
     lyricsUnavailable: Boolean,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
@@ -64,6 +71,7 @@ fun LyricsSidePanel(
         lyricsUnavailable = lyricsUnavailable,
         loadingText = lyricsLoadingText,
         haptics = haptics,
+        translationAvailable = translationAvailable,
     )
     // The provider drawer frosts this column, not the page beside it.
     val haze = remember { HazeState() }
@@ -92,12 +100,14 @@ fun LyricsSidePanel(
                     )
                 },
                 translationToggle = {
-                    TranslationToggleButton(
-                        state = lyricsTranslation.translationState,
-                        showingTranslation = lyricsTranslation.showingTranslation,
-                        enabled = !lyrics.isNullOrEmpty(),
-                        onClick = lyricsTranslation.toggleTranslation,
-                    )
+                    if (lyricsTranslation.translationAvailable) {
+                        TranslationToggleButton(
+                            state = lyricsTranslation.translationState,
+                            showingTranslation = lyricsTranslation.showingTranslation,
+                            enabled = !lyrics.isNullOrEmpty(),
+                            onClick = lyricsTranslation.toggleTranslation,
+                        )
+                    }
                 },
             ) { panelModifier ->
                 LyricsTranslationMotion(
@@ -125,7 +135,7 @@ fun LyricsSidePanel(
                 }
             }
         }
-        if (showLyricsProviders) {
+        if (showLyricsProviders && onSelectLyricsProvider != null) {
             LyricsProviderSheet(
                 hazeState = haze,
                 currentSource = lyricsSource,
